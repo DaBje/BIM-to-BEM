@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "BIM to BEM",
-    "author": "David Bjelland",
+    "author": "DaBje",
     "version": (2, 2, 0),
     # Feature: clicking an IFC Space in the 3D viewport highlights it in the room selector list
     "blender": (5, 1, 2),
