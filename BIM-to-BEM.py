@@ -1,7 +1,4 @@
 # BIM-to-BEM.py
-#
-# Note-worthy:
-#   - Version is the first working proof of concept considering multiple standards
 
 bl_info = {
     "name": "BIM to BEM",
