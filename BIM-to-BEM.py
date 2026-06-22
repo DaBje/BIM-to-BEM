@@ -6,8 +6,8 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "David Bjelland",
-    "version": (2, 1, 1),
-    # Fix: F_C row 3.1.1 (Fensterläden/Rollläden ¾ geschlossen) corrected to (0.40, 0.35, 0.35) per DIN 4108-2 Tab. 8
+    "version": (2, 2, 0),
+    # Feature: clicking an IFC Space in the 3D viewport highlights it in the room selector list
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar (N) > BIM to BEM",
     "description": "Query net floor area, volume, OWR and WFR (opening-to-floor ratio per DIN 4108-2) of IFC spaces with orientation breakdown.",
@@ -3494,9 +3494,33 @@ _classes = (
 )
 
 
+_last_active_obj = [None]
+
+
+def _sync_selection_to_list(scene, depsgraph):
+    obj = bpy.context.active_object
+    if obj is _last_active_obj[0]:
+        return
+    _last_active_obj[0] = obj
+    if obj is None:
+        return
+    tool, _ = _get_ifc_tools()
+    if tool is None:
+        return
+    el = tool.Ifc.get_entity(obj)
+    if el is None or not el.is_a("IfcSpace"):
+        return
+    gid = el.GlobalId
+    for i, item in enumerate(scene.bim_query_spaces):
+        if item.global_id == gid:
+            scene.bim_query_space_index = i
+            break
+
+
 def register():
     for cls in _classes:
         bpy.utils.register_class(cls)
+    bpy.app.handlers.depsgraph_update_post.append(_sync_selection_to_list)
     bpy.types.Scene.bim_query_spaces = CollectionProperty(type=BIMQuerySpaceItem)
     bpy.types.Scene.bim_query_space_index = IntProperty(default=0)
     bpy.types.Scene.bim_query_usage_filters = CollectionProperty(type=BIMQueryUsageFilter)
@@ -3667,6 +3691,8 @@ def unregister():
     del bpy.types.Scene.bim_query_usage_filters
     del bpy.types.Scene.bim_query_space_index
     del bpy.types.Scene.bim_query_spaces
+    if _sync_selection_to_list in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_sync_selection_to_list)
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)
 
