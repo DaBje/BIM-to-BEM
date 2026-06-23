@@ -17,8 +17,8 @@ git pull
 
 ### 2. Create a branch for your change
 ```
-git checkout -b feature/your-feature-name   # new feature        → version minor bump (2.1.x → 2.2.0)
-git checkout -b fix/what-you-are-fixing     # bug fix or UI change → version patch bump (2.1.1 → 2.1.2)
+git checkout -b feature/your-feature-name   # new feature        → version minor bump (i.e., 2.1.x → 2.2.0)
+git checkout -b fix/what-you-are-fixing     # bug fix or UI change → version patch bump (i.e., 2.1.1 → 2.1.2)
 ```
 
 ### 3. Make your changes, test in Blender
@@ -34,6 +34,12 @@ git commit -m "Short description of what changed and why"
 git push
 ```
 Then go to github.com/DaBje/BIM-to-BEM and open a Pull Request to merge your branch into master.
+
+### 6. After merging - tag the release (repo owner only)
+Update `bl_info version` in `BIM-to-BEM`, commit, then:
+
+git tag vX.X.X
+git push origin vX.X.X
 
 ---
 
