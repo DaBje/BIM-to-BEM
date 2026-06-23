@@ -3,8 +3,8 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
-    "version": (2, 2, 0),
-    # Feature: clicking an IFC Space in the 3D viewport highlights it in the room selector list
+    "version": (2, 2, 1),
+    # Fix - Issue#2: filtering and sorting of IfcSpaces queried
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar (N) > BIM to BEM",
     "description": "Query net floor area, volume, OWR and WFR (opening-to-floor ratio per DIN 4108-2) of IFC spaces with orientation breakdown.",
@@ -2783,6 +2783,24 @@ class BIM_OT_select_space(Operator):
 # --------------------------------------------------------------------------- #
 
 class BIM_UL_query_spaces(UIList):
+    sort_by: EnumProperty(
+        items=[
+            ('name',  "Name",  "Sort by IFC Space Name"),
+            ('usage', "Usage", "Sort by usage type"),
+            ('wfr',   "WFR%",  "Sort by window-to-floor ratio, highest first"),
+        ],
+        default='name',
+    )
+    reverse: bpy.props.BoolProperty(name="Reverse", default=False)
+
+    def draw_filter(self, context, layout):
+        row = layout.row(align=True)
+        row.prop(self, "filter_name", text="", icon="VIEWZOOM")
+        row.prop(self, "use_filter_invert", text="", icon="ARROW_LEFTRIGHT")
+        row2 = layout.row(align=True)
+        row2.prop(self, "sort_by", expand=True)
+        row2.prop(self, "reverse", text="", icon="SORT_DESC", toggle=True)
+
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         st = _list_state['query']
         st['n_drawn'] += 1
@@ -2810,23 +2828,23 @@ class BIM_UL_query_spaces(UIList):
         enabled_types = {f.name for f in filters_coll if f.enabled}
         has_filters = len(filters_coll) > 0
         group_by = getattr(context.scene, "bim_query_group_by", "usage")
+        search = self.filter_name.lower() if self.filter_name else ""
         flt_flags = []
         for item in items:
             key = item.long_name if group_by == "longname" else item.usage_type
-            if not has_filters or key in enabled_types:
-                flt_flags.append(self.bitflag_filter_item)
-            else:
-                flt_flags.append(0)
-        if group_by == "longname":
-            sorted_indices = sorted(
-                range(len(items)),
-                key=lambda i: (items[i].long_name, items[i].name),
-            )
+            passes = not has_filters or key in enabled_types
+            if search:
+                searchable = f"{item.name} {item.long_name} {item.usage_type}".lower()
+                passes = passes and (search in searchable)
+            flt_flags.append(self.bitflag_filter_item if passes else 0)
+        if self.sort_by == 'wfr':
+            sorted_indices = sorted(range(len(items)), key=lambda i: -items[i].wfr)
+        elif self.sort_by == 'usage':
+            sorted_indices = sorted(range(len(items)), key=lambda i: (items[i].usage_type, items[i].name))
         else:
-            sorted_indices = sorted(
-                range(len(items)),
-                key=lambda i: (items[i].usage_type, items[i].name),
-            )
+            sorted_indices = sorted(range(len(items)), key=lambda i: items[i].name)
+        if self.reverse:
+            sorted_indices = list(reversed(sorted_indices))
         flt_neworder = [0] * len(items)
         for display_pos, orig_idx in enumerate(sorted_indices):
             flt_neworder[orig_idx] = display_pos
@@ -2904,6 +2922,23 @@ class BIM_UL_compliance(UIList):
 
 
 class BIM_UL_transform_spaces(UIList):
+    sort_by: EnumProperty(
+        items=[
+            ('name',  "Name",  "Sort by IFC Space Name"),
+            ('usage', "Usage", "Sort by usage type"),
+        ],
+        default='name',
+    )
+    reverse: bpy.props.BoolProperty(name="Reverse", default=False)
+
+    def draw_filter(self, context, layout):
+        row = layout.row(align=True)
+        row.prop(self, "filter_name", text="", icon="VIEWZOOM")
+        row.prop(self, "use_filter_invert", text="", icon="ARROW_LEFTRIGHT")
+        row2 = layout.row(align=True)
+        row2.prop(self, "sort_by", expand=True)
+        row2.prop(self, "reverse", text="", icon="SORT_DESC", toggle=True)
+
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         st = _list_state['transform']
         st['n_drawn'] += 1
@@ -2927,23 +2962,21 @@ class BIM_UL_transform_spaces(UIList):
         enabled_types = {f.name for f in filters_coll if f.enabled}
         has_filters = len(filters_coll) > 0
         group_by = getattr(context.scene, "bim_query_group_by", "usage")
+        search = self.filter_name.lower() if self.filter_name else ""
         flt_flags = []
         for item in items:
             key = item.long_name if group_by == "longname" else item.usage_type
-            if not has_filters or key in enabled_types:
-                flt_flags.append(self.bitflag_filter_item)
-            else:
-                flt_flags.append(0)
-        if group_by == "longname":
-            sorted_indices = sorted(
-                range(len(items)),
-                key=lambda i: (items[i].long_name, items[i].name),
-            )
+            passes = not has_filters or key in enabled_types
+            if search:
+                searchable = f"{item.name} {item.long_name} {item.usage_type}".lower()
+                passes = passes and (search in searchable)
+            flt_flags.append(self.bitflag_filter_item if passes else 0)
+        if self.sort_by == 'usage':
+            sorted_indices = sorted(range(len(items)), key=lambda i: (items[i].usage_type, items[i].name))
         else:
-            sorted_indices = sorted(
-                range(len(items)),
-                key=lambda i: (items[i].usage_type, items[i].name),
-            )
+            sorted_indices = sorted(range(len(items)), key=lambda i: items[i].name)
+        if self.reverse:
+            sorted_indices = list(reversed(sorted_indices))
         flt_neworder = [0] * len(items)
         for display_pos, orig_idx in enumerate(sorted_indices):
             flt_neworder[orig_idx] = display_pos
