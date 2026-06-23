@@ -29,11 +29,28 @@ git add BIM-to-BEM.py
 git commit -m "Short description of what changed and why"
 ```
 
-### 5. Push and open a Pull Request
+### 5. First push on a new branch
+The first time you push a new branch, Git doesn't know where to send it:
 ```
+git push --set-upstream origin your-branch-name
+```
+After that, plain `git push` works for all subsequent pushes on the same branch.
+
+### 6. Merge to master
+```
+git checkout master
+git merge your-branch-name
 git push
 ```
-Then go to github.com/DaBje/BIM-to-BEM and open a Pull Request to merge your branch into master.
+Or open a Pull Request on github.com/DaBje/BIM-to-BEM if you want a review before merging.
+
+### 7. Tag the release (repo owner only)
+Update `bl_info version` in `BIM-to-BEM.py`, commit, then:
+```
+git tag vX.X.X
+git push origin vX.X.X
+```
+`origin` is the name Git gives your GitHub remote. Tags are not pushed automatically — always push them explicitly.
 
 ### 6. After merging - tag the release (repo owner only)
 Update `bl_info version` in `BIM-to-BEM`, commit, then:
