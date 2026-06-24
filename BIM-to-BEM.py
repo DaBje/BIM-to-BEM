@@ -3,8 +3,8 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
-    "version": (2, 2, 2),
-    # Fix - Issue#3: implement window and door frame shares for the overheating calculation
+    "version": (2, 3, 0),
+    # Feature - Issue#3: implement window and door frame shares for the overheating calculation
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar (N) > BIM to BEM",
     "description": "Query net floor area, volume, OWR and WFR (opening-to-floor ratio per DIN 4108-2) of IFC spaces with orientation breakdown.",
