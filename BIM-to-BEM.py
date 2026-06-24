@@ -185,6 +185,99 @@ def _wall_gross_area(wall, ue):
     return None
 
 
+def _get_frame_thickness(el, ue):
+    """Return FrameThickness (project length units) for a window or door, or None.
+
+    Search order (most to least standard):
+      Windows: Pset_WindowCommon.FrameThickness on element → on type →
+               any pset on element → any pset on type
+      Doors:   Pset_DoorCommon.FrameThickness on element → on type →
+               any pset on element → any pset on type → LiningThickness
+               in any pset → IfcDoorLiningProperties.LiningThickness
+    """
+    def _any_pset(entity, *prop_names):
+        for pset_data in (ue.get_psets(entity, psets_only=True) or {}).values():
+            if not isinstance(pset_data, dict):
+                continue
+            for name in prop_names:
+                v = pset_data.get(name)
+                if v is not None:
+                    return v
+        return None
+
+    el_type = ue.get_type(el)
+
+    if el.is_a("IfcWindow"):
+        T = ue.get_pset(el, "Pset_WindowCommon", "FrameThickness")
+        if T is None and el_type:
+            T = ue.get_pset(el_type, "Pset_WindowCommon", "FrameThickness")
+        if T is None:
+            T = _any_pset(el, "FrameThickness")
+        if T is None and el_type:
+            T = _any_pset(el_type, "FrameThickness")
+        return T
+
+    elif el.is_a("IfcDoor"):
+        T = ue.get_pset(el, "Pset_DoorCommon", "FrameThickness")
+        if T is None and el_type:
+            T = ue.get_pset(el_type, "Pset_DoorCommon", "FrameThickness")
+        if T is None:
+            T = _any_pset(el, "FrameThickness")
+        if T is None and el_type:
+            T = _any_pset(el_type, "FrameThickness")
+        if T is None:
+            T = _any_pset(el, "LiningThickness")
+        if T is None and el_type:
+            T = _any_pset(el_type, "LiningThickness")
+        if T is None and el_type:
+            for pset in getattr(el_type, "HasPropertySets", []) or []:
+                if pset.is_a("IfcDoorLiningProperties"):
+                    T = getattr(pset, "LiningThickness", None)
+                    if T is not None:
+                        break
+        return T
+
+    return None
+
+
+def _opening_glass_fraction(el, ue, unit_scale):
+    """Return (glass_fraction, had_data) for a window or door.
+
+    glass_fraction = (H - 2T)(W - 2T) / (H * W) where T = FrameThickness.
+    H and W are read from standard BaseQuantities first, then direct IFC attributes.
+    Returns fraction=1.0 for windows without frame data (conservative: assume all glass).
+    Returns fraction=0.0 for doors without frame data (door is ignored in frame aggregation).
+    """
+    kind = "Door" if el.is_a("IfcDoor") else "Window"
+    fallback = (0.0 if kind == "Door" else 1.0, False)
+
+    T = _get_frame_thickness(el, ue)
+    if T is None:
+        return fallback
+    # Pset values are in project length units; unit_scale converts to SI (m)
+    T_m = T * unit_scale
+
+    # BaseQuantities are already in SI; direct attributes need unit_scale
+    H_m, _ = _find_quantity(el, ue, ["Height", "OverallHeight"])
+    W_m, _ = _find_quantity(el, ue, ["Width", "OverallWidth"])
+    if H_m is None:
+        raw = getattr(el, "OverallHeight", None)
+        H_m = float(raw) * unit_scale if raw is not None else None
+    if W_m is None:
+        raw = getattr(el, "OverallWidth", None)
+        W_m = float(raw) * unit_scale if raw is not None else None
+
+    if H_m is None or W_m is None:
+        return fallback
+
+    gross = H_m * W_m
+    if gross <= 0:
+        return fallback
+
+    glass = max(0.0, (H_m - 2 * T_m) * (W_m - 2 * T_m))
+    return (glass / gross, True)
+
+
 def _opening_quantity_area(el, ue, scale=1.0):
     area, _ = _find_quantity(el, ue, ["Area"])
     if area is not None:
@@ -768,6 +861,9 @@ def query_space(space, model, ue):
             _wall_geom_lookup[_we.GlobalId] = _wg
 
     total_opening_area = 0.0
+    frame_gross = 0.0
+    frame_glass = 0.0
+    has_any_frame_data = False
     openings_without_area = 0
     seen_op = set()
     for el, geom_rel, orient_rel in jobs:
@@ -852,6 +948,12 @@ def query_space(space, model, ue):
                     out["door_area"] += area
                 else:
                     out["window_area"] += area
+                gf, had_data = _opening_glass_fraction(el, ue, unit_scale)
+                frame_gross += area
+                frame_glass += area * gf
+                if had_data:
+                    has_any_frame_data = True
+        gf_store, had_store = _opening_glass_fraction(el, ue, unit_scale) if area is not None else (1.0, False)
         out["openings"].append({
             "name": el.Name or f"({kind.lower()})",
             "kind": kind,
@@ -859,9 +961,13 @@ def query_space(space, model, ue):
             "has_area": area is not None,
             "azimuth": az,
             "cardinal": card,
+            "glass_fraction": gf_store,
+            "has_frame_data": had_store,
         })
 
     out["total_opening_area"] = total_opening_area
+    out["frame_fraction"] = (1.0 - frame_glass / frame_gross) if frame_gross > 0 else 0.0
+    out["has_frame_data"] = has_any_frame_data
     out["ext_wall_count"] = len(ext_wall_ids)
 
     if out["total_wall_area"] > 0.0:
@@ -948,11 +1054,18 @@ def _get_fc(scene):
     return vals[1] if scene.bim_project_verglasung == 'dreifach' else vals[2]
 
 
+def _effective_frame_fraction(item, scene):
+    if scene.bim_project_frame_override:
+        return scene.bim_project_frame_fraction / 100.0
+    return item.frame_fraction
+
+
 def _s_vorh(item, scene):
-    """S_vorh = WFR × g × F_C  (simplified uniform g and F_C across all openings)."""
+    """S_vorh = WFR × (1 - frame_fraction) × g × F_C."""
     if not item.has_wfr or item.net_floor_area <= 0:
         return None
-    return item.wfr * scene.bim_project_g_value * _get_fc(scene)
+    glass = 1.0 - _effective_frame_fraction(item, scene)
+    return item.wfr * glass * scene.bim_project_g_value * _get_fc(scene)
 
 
 def _din_s1(scene):
@@ -1039,6 +1152,8 @@ class BIMQueryOpening(PropertyGroup):
     has_orientation: BoolProperty(default=False)
     azimuth: FloatProperty(default=0.0)
     cardinal: StringProperty(default="")
+    glass_fraction: FloatProperty(default=1.0)
+    has_frame_data: BoolProperty(default=False)
 
 
 class BIMQueryOrient(PropertyGroup):
@@ -1081,6 +1196,9 @@ class BIMQuerySpaceItem(PropertyGroup):
     has_wfr: BoolProperty(default=False)
     wfr: FloatProperty(default=0.0)
 
+    frame_fraction: FloatProperty(default=0.0)
+    has_frame_data: BoolProperty(default=False)
+
     openings: CollectionProperty(type=BIMQueryOpening)
     orient: CollectionProperty(type=BIMQueryOrient)
     notes: StringProperty(default="")
@@ -1106,6 +1224,8 @@ def _store_result(item, res):
     # reliably distinguish glazed from opaque doors.
     item.has_wfr = item.has_floor_area and item.net_floor_area > 0.0
     item.wfr = item.total_opening_area / item.net_floor_area if item.has_wfr else 0.0
+    item.frame_fraction = float(res["frame_fraction"])
+    item.has_frame_data = res["has_frame_data"]
 
     item.openings.clear()
     for w in res["openings"]:
@@ -1116,6 +1236,8 @@ def _store_result(item, res):
         oi.area = float(w["area"])
         oi.has_orientation = w["cardinal"] is not None
         oi.azimuth = float(w["azimuth"]) if w["azimuth"] is not None else 0.0
+        oi.glass_fraction = float(w["glass_fraction"])
+        oi.has_frame_data = w["has_frame_data"]
         oi.cardinal = w["cardinal"] or ""
     item.orient.clear()
     for c in CARDINALS:
@@ -3164,7 +3286,7 @@ class BIM_PT_space_transformation(Panel):
 
 
 class BIM_PT_summer_overheating(Panel):
-    bl_label = "Summer Overheating Protection"
+    bl_label = "Summer Overheating Protection (DIN 4108-2)"
     bl_idname = "BIM_PT_summer_overheating"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -3212,6 +3334,26 @@ class BIM_PT_summer_overheating(Panel):
                 _dd("Verglasung", "bim_project_verglasung")
             fc_val = _get_fc(scene)
             col.label(text=f"  → F_C = {fc_val:.2f}")
+            col.separator(factor=0.5)
+            col.prop(scene, "bim_project_frame_override", text="Override Frame Share")
+            if scene.bim_project_frame_override:
+                _dd("Frame Share %", "bim_project_frame_fraction")
+                col.label(text=f"  → {scene.bim_project_frame_fraction:.1f}% frame / {100 - scene.bim_project_frame_fraction:.1f}% glass")
+            else:
+                _spaces = scene.bim_query_spaces
+                _with_data = [s for s in _spaces if s.has_frame_data]
+                if _with_data:
+                    _avg_ff = sum(s.frame_fraction for s in _with_data) / len(_with_data)
+                    col.label(
+                        text=f"  → Model avg: {_avg_ff * 100:.1f}% frame / {(1.0 - _avg_ff) * 100:.1f}% glass"
+                             f"  ({len(_with_data)}/{len(_spaces)} spaces with data)",
+                        icon="INFO",
+                    )
+                elif _spaces:
+                    col.label(text="  → No FrameThickness / LiningThickness found in model", icon="INFO")
+                else:
+                    col.label(text="  → Query spaces to see frame share from model", icon="INFO")
+                col.label(text="     (windows without data: 100% glass; doors without data: ignored)", icon="BLANK1")
             col.separator(factor=0.3)
             # S2, S4, S5 are computed per space from IFC geometry data (full-width note)
             note = inp.column(align=True)
@@ -3357,6 +3499,13 @@ class BIM_PT_summer_overheating(Panel):
                              f"  (win {item.window_area:.2f} / door {item.door_area:.2f})"
                     )
 
+                    eff_ff = _effective_frame_fraction(item, scene)
+                    frame_src = "override" if scene.bim_project_frame_override else ("model" if item.has_frame_data else "assumed")
+                    glass_wfr = item.wfr * (1.0 - eff_ff) if item.has_wfr else 0.0
+                    fr_row = box.row()
+                    fr_row.scale_y = 0.85
+                    fr_row.label(text=f"Frame share:  {eff_ff * 100:.1f}%  [{frame_src}]  →  effective WFR: {glass_wfr * 100:.2f}%")
+
                     if item.openings:
                         box.separator(factor=0.5)
                         box.label(text="External openings:")
@@ -3366,10 +3515,11 @@ class BIM_PT_summer_overheating(Panel):
                             icon = "MESH_PLANE" if w.kind == "Door" else "MOD_LATTICE"
                             wrow.label(text=w.name, icon=icon)
                             area_txt = f"{w.area:.2f} m²" if w.has_area else "n/a"
+                            glass_txt = f"  glass: {w.glass_fraction * 100:.0f}%" if w.has_frame_data else ""
                             if w.has_orientation:
-                                wrow.label(text=f"{w.kind}  {area_txt}  {w.azimuth:.0f}° {w.cardinal}")
+                                wrow.label(text=f"{w.kind}  {area_txt}{glass_txt}  {w.azimuth:.0f}° {w.cardinal}")
                             else:
-                                wrow.label(text=f"{w.kind}  {area_txt}")
+                                wrow.label(text=f"{w.kind}  {area_txt}{glass_txt}")
 
                     active_orient = [o for o in item.orient if o.wall_area > 0 or o.opening_area > 0]
                     if active_orient:
@@ -3633,6 +3783,16 @@ def register():
         description="Total solar energy transmittance of the glazing (g-value)",
         default=0.60, min=0.10, max=0.90, step=10, precision=1,
     )
+    bpy.types.Scene.bim_project_frame_override = BoolProperty(
+        name="Manual Frame Override",
+        description="Override the queried frame share with a custom value",
+        default=False,
+    )
+    bpy.types.Scene.bim_project_frame_fraction = FloatProperty(
+        name="Frame Share %",
+        description="Percentage of opening area that is frame (not glass)",
+        default=20.0, min=0.0, max=50.0, step=10, precision=1, subtype='PERCENTAGE',
+    )
     bpy.types.Scene.bim_project_verglasung = EnumProperty(
         name="Verglasung",
         description="Glazing type (only relevant when g > 0.40)",
@@ -3709,6 +3869,7 @@ def unregister():
                "bim_query_room_selector_expanded", "bim_query_input_expanded",
                "bim_query_colorize_mode", "bim_transform_standard",
                "bim_project_sonnenschutz", "bim_project_verglasung", "bim_project_g_value",
+        "bim_project_frame_override", "bim_project_frame_fraction",
                "bim_project_passive_kuehlung",
                "bim_project_bauart", "bim_project_nachtlueftung",
                "bim_project_nutzung", "bim_project_klimaregion",
