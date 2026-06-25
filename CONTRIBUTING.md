@@ -9,28 +9,28 @@ cd BIM-to-BEM
 
 ## Workflow for every change
 
-### 1. Make sure you're on master and up to date
+### 1. Start from an up-to-date master
 ```
 git checkout master
 git pull
 ```
 
-### 2. Create a branch for your change
+### 2. Create a branch
 ```
-git checkout -b feature/your-feature-name   # new feature        → version minor bump (i.e., 2.1.x → 2.2.0)
-git checkout -b fix/what-you-are-fixing     # bug fix or UI change → version patch bump (i.e., 2.1.1 → 2.1.2)
+git checkout -b feature/your-feature-name   # new feature        → minor bump (2.2.x → 2.3.0)
+git checkout -b fix/what-you-are-fixing     # bug fix or UI change → patch bump (2.3.0 → 2.3.1)
 ```
 
-### 3. Make your changes, test in Blender
+### 3. Make your changes and test in Blender
 
-### 4. Commit
+### 4. Bump the version in `bl_info` and commit
 ```
 git add BIM-to-BEM.py
 git commit -m "Short description of what changed and why"
 ```
 
-### 5. First push on a new branch
-The first time you push a new branch, Git doesn't know where to send it:
+### 5. Push the branch
+First push on a new branch requires setting the upstream:
 ```
 git push --set-upstream origin your-branch-name
 ```
@@ -45,18 +45,11 @@ git push
 Or open a Pull Request on github.com/DaBje/BIM-to-BEM if you want a review before merging.
 
 ### 7. Tag the release (repo owner only)
-Update `bl_info version` in `BIM-to-BEM.py`, commit, then:
+Both commands use the same version number — `git tag` creates the tag locally, `git push origin` sends it to GitHub:
 ```
-git tag vX.X.X
-git push origin vX.X.X
+git tag v2.3.0
+git push origin v2.3.0
 ```
-`origin` is the name Git gives your GitHub remote. Tags are not pushed automatically — always push them explicitly.
-
-### 6. After merging - tag the release (repo owner only)
-Update `bl_info version` in `BIM-to-BEM`, commit, then:
-
-git tag vX.X.X
-git push origin vX.X.X
 
 ---
 
@@ -64,9 +57,9 @@ git push origin vX.X.X
 
 | Change type | Example | When |
 |---|---|---|
-| Bug fix | 2.1.1 → 2.1.2 | Correcting wrong values, crashes |
-| UI change | 2.1.1 → 2.1.2 | Layout, labels, dropdown width — no new behaviour |
-| New feature | 2.1.x → 2.2.0 | New behaviour, new UI element |
+| Bug fix | 2.3.0 → 2.3.1 | Correcting wrong values, crashes |
+| UI change | 2.3.0 → 2.3.1 | Layout, labels, dropdown width — no new behaviour |
+| New feature | 2.3.x → 2.4.0 | New behaviour, new UI element |
 | Breaking change | 2.x.x → 3.0.0 | Incompatible with previous version |
 
 ## Useful commands
