@@ -3,8 +3,8 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
-    "version": (2, 3, 0),
-    # Feature - Issue#3: implement window and door frame shares for the overheating calculation
+    "version": (2, 3, 1),
+    # Fix - Issue#7: Corrected thermal zoning according to the standards chosen
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar (N) > BIM to BEM",
     "description": "Query net floor area, volume, OWR and WFR (opening-to-floor ratio per DIN 4108-2) of IFC spaces with orientation breakdown.",
@@ -1131,13 +1131,17 @@ def _space_szul(item, scene):
     return szul
 
 
-def _is_space_heated(item, scene):
-    """Return True if the space's group is marked as heated (default True)."""
+def _space_condition(item, scene):
+    """Return 'heated', 'low_heated', or 'unheated' for the space's group."""
     key = _item_group_key(item, scene)
     for f in _active_filters(scene):
         if f.name == key:
-            return f.heated
-    return True
+            return f.condition if f.condition in ("heated", "low_heated", "unheated") else "heated"
+    return "heated"
+
+
+def _is_space_heated(item, scene):
+    return _space_condition(item, scene) == "heated"
 
 
 # --------------------------------------------------------------------------- #
@@ -1168,7 +1172,7 @@ class BIMQueryUsageFilter(PropertyGroup):
     """One entry per distinct IfcSpaceType usage label."""
     name: StringProperty()
     enabled: BoolProperty(default=True)
-    heated: BoolProperty(default=True)  # type: ignore[assignment]
+    condition: StringProperty(default="heated")  # type: ignore[assignment]
 
 
 class BIMQuerySpaceItem(PropertyGroup):
@@ -1543,16 +1547,20 @@ class BIM_OT_query_toggle_usage(Operator):
 
 class BIM_OT_toggle_heated(Operator):
     bl_idname = "bim_query.toggle_heated"
-    bl_label = "Toggle Heated"
-    bl_description = "Mark all spaces in this group as heated or unheated"
+    bl_label = "Cycle Thermal Condition"
+    bl_description = "Cycle thermal conditioning for all spaces in this group"
     bl_options = {"REGISTER", "UNDO"}
 
     group_name: StringProperty()
 
     def execute(self, context):
+        standard = context.scene.bim_transform_standard
+        order = (["heated", "low_heated", "unheated"] if standard == "din_18599_1"
+                 else ["heated", "unheated"])
         for f in _active_filters(context.scene):
             if f.name == self.group_name:
-                f.heated = not f.heated
+                cur = f.condition if f.condition in order else order[0]
+                f.condition = order[(order.index(cur) + 1) % len(order)]
                 return {"FINISHED"}
         return {"CANCELLED"}
 
@@ -1645,8 +1653,9 @@ class BIM_OT_export_zones(Operator):
             return {"CANCELLED"}
 
         export_data = {"zones": []}
-        for (heated, storey, comp_idx), items in sorted(zone_groups.items(), key=lambda x: (x[0][1], x[0][0], x[0][2])):
-            cond = "beheizt" if heated else "unbeheizt"
+        for (condition, usage_key, storey_key, comp_idx), items in sorted(
+                zone_groups.items(), key=lambda x: (x[0][2], x[0][0], x[0][1], x[0][3])):
+            cond = _cond_label(condition)
             spaces = []
             total_area = 0.0
             for item in items:
@@ -1660,16 +1669,17 @@ class BIM_OT_export_zones(Operator):
                     space_entry["net_floor_area_m2"] = round(item.net_floor_area, 4)
                     total_area += item.net_floor_area
                 spaces.append(space_entry)
+            parts = [cond] + ([usage_key] if usage_key else []) + ([storey_key] if storey_key else [])
             comp_suffix = f" ({comp_idx + 1})" if comp_idx > 0 else ""
             zone_entry = {
-                "name":               f"{cond} {storey}{comp_suffix}".strip(),
-                "thermal_condition":  cond,
-                "storey":             storey,
-                "component":          comp_idx,
-                "heated":             heated,
-                "space_count":        len(items),
+                "name":                " ".join(parts) + comp_suffix,
+                "thermal_condition":   condition,
+                "usage_type":          usage_key,
+                "storey":              storey_key,
+                "component":           comp_idx,
+                "space_count":         len(items),
                 "total_floor_area_m2": round(total_area, 4),
-                "spaces":             spaces,
+                "spaces":              spaces,
             }
             export_data["zones"].append(zone_entry)
 
@@ -1754,53 +1764,67 @@ def _apply_colorize(context, compliance_mode):
 
 
 # Distinct colors for the heating-condition colorize mode.
-_COLOR_HEATED   = (0.90, 0.42, 0.05)   # warm orange
-_COLOR_UNHEATED = (0.15, 0.50, 0.85)   # cool blue
+_COLOR_HEATED     = (0.90, 0.42, 0.05)   # warm orange
+_COLOR_LOW_HEATED = (0.80, 0.70, 0.10)   # amber yellow
+_COLOR_UNHEATED   = (0.15, 0.50, 0.85)   # cool blue
 
-# Per-zone color palettes: warm tones for heated zones, cool for unheated.
-# Each index gives one zone a distinct hue within its category.
+# Per-zone color palettes per condition category.
 _WARM_ZONE_COLORS = [
-    (0.90, 0.42, 0.05),  # orange
-    (0.85, 0.20, 0.15),  # red-orange
-    (0.95, 0.70, 0.10),  # amber
-    (0.80, 0.55, 0.15),  # golden
-    (0.70, 0.30, 0.05),  # brown-orange
-    (0.95, 0.45, 0.35),  # salmon
-    (0.75, 0.15, 0.30),  # crimson
-    (0.90, 0.60, 0.20),  # light orange
+    (0.90, 0.42, 0.05),
+    (0.85, 0.20, 0.15),
+    (0.95, 0.70, 0.10),
+    (0.80, 0.55, 0.15),
+    (0.70, 0.30, 0.05),
+    (0.95, 0.45, 0.35),
+    (0.75, 0.15, 0.30),
+    (0.90, 0.60, 0.20),
+]
+_LOW_ZONE_COLORS = [
+    (0.80, 0.70, 0.10),
+    (0.75, 0.62, 0.08),
+    (0.85, 0.75, 0.15),
+    (0.70, 0.58, 0.12),
 ]
 _COOL_ZONE_COLORS = [
-    (0.15, 0.50, 0.85),  # blue
-    (0.10, 0.65, 0.75),  # teal
-    (0.20, 0.35, 0.80),  # dark blue
-    (0.05, 0.55, 0.55),  # dark teal
-    (0.30, 0.60, 0.90),  # light blue
-    (0.15, 0.45, 0.65),  # steel blue
-    (0.25, 0.75, 0.85),  # cyan
-    (0.10, 0.30, 0.70),  # navy
+    (0.15, 0.50, 0.85),
+    (0.10, 0.65, 0.75),
+    (0.20, 0.35, 0.80),
+    (0.05, 0.55, 0.55),
+    (0.30, 0.60, 0.90),
+    (0.15, 0.45, 0.65),
+    (0.25, 0.75, 0.85),
+    (0.10, 0.30, 0.70),
 ]
 
 
-def _zone_color(idx, heated):
-    palette = _WARM_ZONE_COLORS if heated else _COOL_ZONE_COLORS
+def _zone_color(idx, condition):
+    if condition == "low_heated":
+        palette = _LOW_ZONE_COLORS
+    elif condition == "unheated":
+        palette = _COOL_ZONE_COLORS
+    else:
+        palette = _WARM_ZONE_COLORS
     return palette[idx % len(palette)]
 
 
-def _build_zone_groups(scene, model=None):
-    """Return dict: (heated_bool, storey_name, component_idx) -> [BIMQuerySpaceItem].
+def _cond_label(condition):
+    return {"heated": "beheizt", "low_heated": "niedrig beheizt", "unheated": "unbeheizt"}.get(condition, condition)
 
-    Spaces with the same thermal condition on the same storey are first
-    collected together, then split into spatially-connected components via
-    shared IfcWall boundaries.  Each disconnected component becomes its own
-    zone entry (component_idx = 0, 1, 2, …), preventing geographically
-    separate corridor wings etc. from being merged into one zone object.
-    Filter checkboxes still control which spaces are included.
+
+def _build_zone_groups(scene, model=None):
+    """Return dict: (condition, usage_key, storey_key, component_idx) -> [BIMQuerySpaceItem].
+
+    condition   : 'heated' / 'low_heated' / 'unheated'
+    usage_key   : item.usage_type when bim_transform_group_by_usage, else ''
+    storey_key  : storey name when NOT bim_transform_cross_storey, else ''
+    component_idx: 0-based index of spatially disconnected components within the bin
     """
     filters_coll = _active_filters(scene)
     enabled_types = {f.name for f in filters_coll if f.enabled}
     has_filters = len(filters_coll) > 0
+    cross_storey   = getattr(scene, "bim_transform_cross_storey",   True)
+    group_by_usage = getattr(scene, "bim_transform_group_by_usage", True)
 
-    # Step 1: bin by (heated, storey) — same as before
     raw_groups = {}
     for item in scene.bim_query_spaces:
         if not item.has_result:
@@ -1808,24 +1832,22 @@ def _build_zone_groups(scene, model=None):
         gk = _item_group_key(item, scene)
         if has_filters and gk not in enabled_types:
             continue
-        storey = ""
-        if model is not None:
+        condition = _space_condition(item, scene)
+        usage_key = item.usage_type if group_by_usage else ""
+        storey_key = ""
+        if not cross_storey and model is not None:
             try:
-                storey = _get_storey(model.by_guid(item.global_id))
+                storey_key = _get_storey(model.by_guid(item.global_id))
             except Exception:
                 pass
-        key = (_is_space_heated(item, scene), storey)
-        raw_groups.setdefault(key, []).append(item)
+        raw_groups.setdefault((condition, usage_key, storey_key), []).append(item)
 
-    # Step 2: split each bin into connected components via shared wall boundaries
     groups = {}
-    for (heated, storey), items in raw_groups.items():
+    for (condition, usage_key, storey_key), items in raw_groups.items():
         if model is None or len(items) <= 1:
-            # No model to query adjacency, or trivially one space → single component
-            groups[(heated, storey, 0)] = list(items)
+            groups[(condition, usage_key, storey_key, 0)] = list(items)
             continue
 
-        # Build wall-based adjacency graph among items in this bin
         gid_to_item = {item.global_id: item for item in items}
         adj = {gid: set() for gid in gid_to_item}
         wall_to_gids = {}
@@ -1847,7 +1869,6 @@ def _build_zone_groups(scene, model=None):
                     adj[in_bin[i]].add(in_bin[j])
                     adj[in_bin[j]].add(in_bin[i])
 
-        # BFS to extract connected components
         visited = set()
         comp_idx = 0
         for start_gid in gid_to_item:
@@ -1862,7 +1883,7 @@ def _build_zone_groups(scene, model=None):
                 visited.add(cur)
                 component.append(gid_to_item[cur])
                 queue.extend(adj[cur] - visited)
-            groups[(heated, storey, comp_idx)] = component
+            groups[(condition, usage_key, storey_key, comp_idx)] = component
             comp_idx += 1
 
     return groups
@@ -2129,15 +2150,16 @@ def _create_zone_boundary_objects(context, zone_groups, space_color_map,
 
     n_created = 0
 
-    for (heated, storey, comp_idx), items in zone_groups.items():
-        zone_key   = (heated, storey, comp_idx)
+    for (condition, usage_key, storey_key, comp_idx), items in zone_groups.items():
+        zone_key   = (condition, usage_key, storey_key, comp_idx)
         zone_color = space_color_map.get(items[0].global_id if items else None,
                                          (0.5, 0.5, 0.5))
 
-        cond_label   = "beheizt" if heated else "unbeheizt"
-        storey_label = f"_{storey}" if storey else ""
+        cond_label   = _cond_label(condition)
+        usage_label  = f"_{usage_key}"  if usage_key  else ""
+        storey_label = f"_{storey_key}" if storey_key else ""
         comp_label   = f"_{comp_idx + 1}" if comp_idx > 0 else ""
-        obj_name     = f"Zone_{cond_label}{storey_label}{comp_label}"
+        obj_name     = f"Zone_{cond_label}{usage_label}{storey_label}{comp_label}"
 
         bm = bm_mod.new()
         dissolved_wall_gids = set()   # intra-zone walls → fill with solid mesh
@@ -2305,9 +2327,12 @@ def _create_zone_boundary_objects(context, zone_groups, space_color_map,
                         # ASHRAE 140-2020:
                         #   All interior cross-zone walls → midplane (+T/2) regardless of condition.
                         # ---------------------------------------------------------------
-                        other_zones     = adj_zones - {zone_key}
-                        adj_conditions  = {z[0] for z in other_zones}   # set of booleans
-                        thermal_mismatch = bool(adj_conditions - {heated})
+                        other_zones      = adj_zones - {zone_key}
+                        # For boundary placement, what matters is conditioned vs unheated —
+                        # heated and low_heated are both "conditioned" and meet at midplane.
+                        this_conditioned = condition != "unheated"
+                        adj_conditioned  = {z[0] != "unheated" for z in other_zones}
+                        thermal_mismatch = bool(adj_conditioned - {this_conditioned})
 
                         _wo = tool.Ifc.get_object(el) if tool else None
                         T = _get_wall_thickness(el, ue, unit_scale, _wo) or 0.20
@@ -2323,7 +2348,8 @@ def _create_zone_boundary_objects(context, zone_groups, space_color_map,
                                 offset = 0.0       # inner face — wall not included in either zone
                         else:  # din_18599_1
                             if thermal_mismatch:
-                                offset = T if heated else 0.0
+                                # conditioned side (heated or low_heated) includes wall; unheated gets inner face
+                                offset = T if this_conditioned else 0.0
                             else:
                                 offset = T * 0.5
 
@@ -2628,25 +2654,22 @@ def _create_and_visualize_zones(context):
 
     owner_history = next(iter(model.by_type("IfcOwnerHistory")), None)
 
-    # Create one IfcZone per (heated, storey) and assign member spaces.
-    # Each heated condition gets a distinct colour index; same colour on all floors.
+    # Create one IfcZone per group and assign member spaces.
     space_color_map = {}   # global_id -> rgb tuple
-    color_key_map   = {}   # heated_bool -> rgb tuple
-    warm_idx = cool_idx = 0
+    color_key_map   = {}   # condition -> rgb tuple
+    cond_idx        = {"heated": 0, "low_heated": 0, "unheated": 0}
 
-    for (heated, storey, comp_idx), items in zone_groups.items():
-        if heated not in color_key_map:
-            color_key_map[heated] = _zone_color(warm_idx if heated else cool_idx, heated)
-            if heated:
-                warm_idx += 1
-            else:
-                cool_idx += 1
-        color = color_key_map[heated]
+    for (condition, usage_key, storey_key, comp_idx), items in zone_groups.items():
+        if condition not in color_key_map:
+            color_key_map[condition] = _zone_color(cond_idx.get(condition, 0), condition)
+            cond_idx[condition] = cond_idx.get(condition, 0) + 1
+        color = color_key_map[condition]
 
-        cond_label   = "beheizt" if heated else "unbeheizt"
-        storey_label = f" {storey}" if storey else ""
-        comp_label   = f" ({comp_idx + 1})" if comp_idx > 0 else ""
-        zone_name    = f"{cond_label}{storey_label}{comp_label}"
+        cond_part   = _cond_label(condition)
+        usage_part  = f" {usage_key}"   if usage_key   else ""
+        storey_part = f" {storey_key}"  if storey_key  else ""
+        comp_part   = f" ({comp_idx + 1})" if comp_idx > 0 else ""
+        zone_name   = f"{cond_part}{usage_part}{storey_part}{comp_part}"
 
         zone_kw = {"GlobalId": _guid.new(), "Name": zone_name,
                    "Description": _BEM_ZONE_TAG}
@@ -2769,7 +2792,9 @@ def _apply_colorize_heating(context):
             obj = None
         if obj is None:
             continue
-        colored_objs[obj] = _COLOR_HEATED if _is_space_heated(item, scene) else _COLOR_UNHEATED
+        _c = _space_condition(item, scene)
+        colored_objs[obj] = (_COLOR_HEATED if _c == "heated" else
+                             _COLOR_LOW_HEATED if _c == "low_heated" else _COLOR_UNHEATED)
 
     if not colored_objs:
         return "CANCELLED", "No space objects found in the 3D viewport."
@@ -3240,24 +3265,32 @@ class BIM_PT_space_transformation(Panel):
         row.operator("bim_query.remove", icon="REMOVE")
         row.operator("bim_query.clear", icon="TRASH")
 
+        # ---- Standard selection (drives available conditioning options) ------
+        layout.separator(factor=0.6)
+        std_row = layout.split(factor=0.28)
+        std_row.label(text="Standard:")
+        std_row.prop(scene, "bim_transform_standard", text="")
+
         # ---- Thermal conditioning per group ---------------------------------
-        # Only show groups that are currently enabled (checked) in the filter.
-        # Unchecking a group in the Room Selector instantly removes it here.
         active_heated = [f for f in active_f if f.enabled]
         if active_heated:
-            layout.separator(factor=0.6)
+            standard = scene.bim_transform_standard
+            din = standard == 'din_18599_1'
+            _cond_ui = {
+                "heated":     ("Heated (≥ 19 °C)"    if din else "Heated",     "LIGHT_SUN"),
+                "low_heated": ("Low-heated (12–19 °C)",                          "LIGHT_HEMI"),
+                "unheated":   ("Unheated (< 12 °C)"  if din else "Unheated",   "FREEZE"),
+            }
+            layout.separator(factor=0.4)
             layout.label(text="Thermal Conditioning:")
             tcol = layout.column(align=True)
             for f in active_heated:
                 trow = tcol.row(align=True)
                 label = f.name if f.name else ("(no long name)" if scene.bim_query_group_by == "longname" else "(untyped)")
                 trow.label(text=label)
-                op = trow.operator(
-                    "bim_query.toggle_heated",
-                    text="Heated (20 °C)" if f.heated else "Unheated (≤ 15 °C)",
-                    icon="LIGHT_SUN" if f.heated else "FREEZE",
-                    depress=f.heated,
-                )
+                cond = f.condition if f.condition in _cond_ui else "heated"
+                btn_text, btn_icon = _cond_ui[cond]
+                op = trow.operator("bim_query.toggle_heated", text=btn_text, icon=btn_icon)
                 op.group_name = f.name
 
             layout.separator(factor=0.5)
@@ -3268,11 +3301,12 @@ class BIM_PT_space_transformation(Panel):
             else:
                 heat_row.operator("bim_query.colorize_heating", icon="SHADING_RENDERED")
 
-        # ---- Standard selection + transform ---------------------------------
-        layout.separator(factor=0.6)
-        std_row = layout.split(factor=0.28)
-        std_row.label(text="Standard:")
-        std_row.prop(scene, "bim_transform_standard", text="")
+        # ---- Zoning options -------------------------------------------------
+        layout.separator(factor=0.4)
+        layout.prop(scene, "bim_transform_group_by_usage")
+        layout.prop(scene, "bim_transform_cross_storey")
+
+        # ---- Transform button -----------------------------------------------
         layout.separator(factor=0.3)
         zone_row = layout.row(align=True)
         if scene.bim_query_viz_active and scene.bim_query_colorize_mode == 'zones':
@@ -3841,6 +3875,20 @@ def register():
         ],
         default='din_18599_1',
     )
+    bpy.types.Scene.bim_transform_cross_storey = BoolProperty(
+        name="Merge zones across storeys",
+        description="Allow spaces on different floors with identical conditioning to form one zone "
+                    "(per DIN V 18599-1 / VDI 2078). Disable if separate buildings share a storey "
+                    "and should not be merged.",
+        default=True,
+    )
+    bpy.types.Scene.bim_transform_group_by_usage = BoolProperty(
+        name="Separate zones by usage type",
+        description="Spaces with different IFC usage types form separate zones even when adjacent "
+                    "and equally conditioned (per DIN V 18599-1 / VDI 2078). Disable if usage types "
+                    "are not reliably modelled.",
+        default=True,
+    )
     bpy.types.Scene.bim_query_input_expanded = BoolProperty(
         name="Input Parameters",
         description="Expand the DIN 4108-2 input parameters section",
@@ -3868,6 +3916,7 @@ def unregister():
                "bim_query_detail_expanded",
                "bim_query_room_selector_expanded", "bim_query_input_expanded",
                "bim_query_colorize_mode", "bim_transform_standard",
+               "bim_transform_cross_storey", "bim_transform_group_by_usage",
                "bim_project_sonnenschutz", "bim_project_verglasung", "bim_project_g_value",
         "bim_project_frame_override", "bim_project_frame_fraction",
                "bim_project_passive_kuehlung",
