@@ -3,8 +3,8 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
-    "version": (2, 3, 1),
-    # Fix - Issue#7: Corrected thermal zoning according to the standards chosen
+    "version": (3, 0, 0),
+    # Feature - Issue#11: U-value calculator
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar (N) > BIM to BEM",
     "description": "Query net floor area, volume, OWR and WFR (opening-to-floor ratio per DIN 4108-2) of IFC spaces with orientation breakdown.",
@@ -289,6 +289,123 @@ def _opening_quantity_area(el, ue, scale=1.0):
         # project length unit (e.g. mm), so apply scale² to get m².
         return float(w) * float(h) * (scale * scale)
     return None
+
+
+# --------------------------------------------------------------------------- #
+# U-value helpers
+# --------------------------------------------------------------------------- #
+
+_UVAL_R_SI = 0.13   # m²K/W — internal surface resistance (ISO 6946)
+_UVAL_R_SE = 0.04   # m²K/W — external surface resistance
+
+_UVAL_PSET = {
+    "Wall":   ("Pset_WallCommon",   "ThermalTransmittance"),
+    "Window": ("Pset_WindowCommon", "ThermalTransmittance"),
+    "Door":   ("Pset_DoorCommon",   "ThermalTransmittance"),
+    "Roof":   ("Pset_SlabCommon",   "ThermalTransmittance"),
+    "Floor":  ("Pset_SlabCommon",   "ThermalTransmittance"),
+}
+
+
+def _classify_element_kind(el, rel=None):
+    """Return 'Wall', 'Window', 'Door', 'Roof', 'Floor', or None."""
+    if el.is_a("IfcWindow"):
+        return "Window"
+    if el.is_a("IfcDoor"):
+        return "Door"
+    if el.is_a("IfcWall") or el.is_a("IfcWallStandardCase"):
+        return "Wall"
+    if el.is_a("IfcRoof"):
+        return "Roof"
+    if el.is_a("IfcSlab"):
+        pt = (getattr(el, "PredefinedType", None) or "").upper()
+        if pt == "ROOF":
+            return "Roof"
+        if pt in ("FLOOR", "BASESLAB"):
+            return "Floor"
+        if rel is not None:
+            flag = (getattr(rel, "InternalOrExternalBoundary", None) or "").upper()
+            if "EARTH" in flag:
+                return "Floor"
+        return "Roof"
+    if el.is_a("IfcCovering"):
+        pt = (getattr(el, "PredefinedType", None) or "").upper()
+        if pt == "ROOFING":
+            return "Roof"
+    return None
+
+
+def _u_from_pset(el, ue, kind):
+    """ThermalTransmittance: standard pset on element → on type → any pset."""
+    entry = _UVAL_PSET.get(kind)
+    if entry:
+        u = ue.get_pset(el, entry[0], entry[1])
+        if u is not None:
+            return float(u)
+        el_type = ue.get_type(el)
+        if el_type is not None:
+            u = ue.get_pset(el_type, entry[0], entry[1])
+            if u is not None:
+                return float(u)
+    for pset_data in (ue.get_psets(el, psets_only=True) or {}).values():
+        if not isinstance(pset_data, dict):
+            continue
+        v = pset_data.get("ThermalTransmittance")
+        if v is not None:
+            return float(v)
+    el_type = ue.get_type(el)
+    if el_type is not None:
+        for pset_data in (ue.get_psets(el_type, psets_only=True) or {}).values():
+            if not isinstance(pset_data, dict):
+                continue
+            v = pset_data.get("ThermalTransmittance")
+            if v is not None:
+                return float(v)
+    return None
+
+
+def _u_from_layers(el, ue, unit_scale):
+    """R = R_si + Σ(d/λ) + R_se per ISO 6946.  Returns None if data incomplete."""
+    def _get_layer_set(entity):
+        for assoc in (getattr(entity, "HasAssociations", None) or []):
+            if not assoc.is_a("IfcRelAssociatesMaterial"):
+                continue
+            mat = assoc.RelatingMaterial
+            if mat.is_a("IfcMaterialLayerSetUsage"):
+                return mat.ForLayerSet
+            if mat.is_a("IfcMaterialLayerSet"):
+                return mat
+        return None
+
+    layer_set = _get_layer_set(el)
+    if layer_set is None:
+        el_type = ue.get_type(el)
+        if el_type is not None:
+            layer_set = _get_layer_set(el_type)
+    if layer_set is None:
+        return None
+
+    R = _UVAL_R_SI + _UVAL_R_SE
+    for layer in (getattr(layer_set, "MaterialLayers", None) or []):
+        d = getattr(layer, "LayerThickness", None)
+        if d is None:
+            return None
+        d_m = float(d) * unit_scale
+        mat = getattr(layer, "Material", None)
+        if mat is None:
+            return None
+        lam = ue.get_pset(mat, "Pset_MaterialThermal", "ThermalConductivity")
+        if lam is None or float(lam) <= 0:
+            return None
+        R += d_m / float(lam)
+
+    return 1.0 / R if R > _UVAL_R_SI + _UVAL_R_SE else None
+
+
+def _u_color(u_val, u_min, u_max):
+    """Viridis: bright yellow (low U, good insulation) → dark purple (high U, poor)."""
+    t = (u_val - u_min) / max(u_max - u_min, 1e-6)
+    return _viridis_color(1.0 - max(0.0, min(1.0, t)))
 
 
 def _get_space_usage_type(entity):
@@ -1208,6 +1325,41 @@ class BIMQuerySpaceItem(PropertyGroup):
     notes: StringProperty(default="")
 
 
+class BIMUValueElement(PropertyGroup):
+    """One external envelope element contributing to a space's U-value analysis."""
+    global_id: StringProperty()  # type: ignore[assignment]
+    kind: StringProperty()       # type: ignore[assignment]  # Wall / Window / Door / Roof / Floor
+    area: FloatProperty(default=0.0)      # type: ignore[assignment]
+    u_value: FloatProperty(default=0.0)   # type: ignore[assignment]
+    u_source: StringProperty()            # type: ignore[assignment]  # model / calculated / default / -
+    has_u: BoolProperty(default=False)    # type: ignore[assignment]
+
+
+class BIMUValueSpaceResult(PropertyGroup):
+    """Aggregated U-value results for one queried space."""
+    global_id: StringProperty()   # type: ignore[assignment]
+    long_name: StringProperty()   # type: ignore[assignment]
+    wall_area:         FloatProperty(default=0.0)   # type: ignore[assignment]
+    wall_ua:           FloatProperty(default=0.0)   # type: ignore[assignment]
+    wall_total:        IntProperty(default=0)        # type: ignore[assignment]
+    wall_from_model:   IntProperty(default=0)        # type: ignore[assignment]
+    window_area:       FloatProperty(default=0.0)   # type: ignore[assignment]
+    window_ua:         FloatProperty(default=0.0)   # type: ignore[assignment]
+    window_total:      IntProperty(default=0)        # type: ignore[assignment]
+    window_from_model: IntProperty(default=0)        # type: ignore[assignment]
+    door_area:         FloatProperty(default=0.0)   # type: ignore[assignment]
+    door_ua:           FloatProperty(default=0.0)   # type: ignore[assignment]
+    door_total:        IntProperty(default=0)        # type: ignore[assignment]
+    door_from_model:   IntProperty(default=0)        # type: ignore[assignment]
+    roof_area:         FloatProperty(default=0.0)   # type: ignore[assignment]
+    roof_ua:           FloatProperty(default=0.0)   # type: ignore[assignment]
+    floor_area:        FloatProperty(default=0.0)   # type: ignore[assignment]
+    floor_ua:          FloatProperty(default=0.0)   # type: ignore[assignment]
+    h_t:               FloatProperty(default=0.0)   # type: ignore[assignment]  # Σ U·A [W/K]
+    has_result:        BoolProperty(default=False)  # type: ignore[assignment]
+    elements: CollectionProperty(type=BIMUValueElement)  # type: ignore[assignment]
+
+
 def _store_result(item, res):
     item.has_floor_area = res["net_floor_area"] is not None
     item.net_floor_area = float(res["net_floor_area"]) if item.has_floor_area else 0.0
@@ -1466,6 +1618,8 @@ class BIM_OT_query_add_selected(Operator):
                 msg += f" ({skipped_non_space} selected object(s) were not spaces.)"
             self.report({"WARNING"}, msg)
             return {"CANCELLED"}
+        if context.scene.bim_uval_results:
+            bpy.ops.bim_query.query_u_values()
         self.report({"INFO"}, f"Added and analyzed {added} space(s).")
         return {"FINISHED"}
 
@@ -1496,6 +1650,8 @@ class BIM_OT_query_refresh(Operator):
             _store_result(item, query_space(entity, model, ue))
             refreshed += 1
         _sync_usage_filters(context.scene)
+        if context.scene.bim_uval_results:
+            bpy.ops.bim_query.query_u_values()
         self.report({"INFO"}, f"Re-analyzed {refreshed} space(s).")
         return {"FINISHED"}
 
@@ -1507,12 +1663,18 @@ class BIM_OT_query_remove(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        items = context.scene.bim_query_spaces
-        idx = context.scene.bim_query_space_index
-        if 0 <= idx < len(items):
+        scene = context.scene
+        items = scene.bim_query_spaces
+        idx = scene.bim_query_space_index
+        removed_gid = items[idx].global_id if 0 <= idx < len(items) else None
+        if removed_gid:
             items.remove(idx)
-            context.scene.bim_query_space_index = min(idx, len(items) - 1)
-        _sync_usage_filters(context.scene)
+            scene.bim_query_space_index = min(idx, len(items) - 1)
+            for i, res in enumerate(scene.bim_uval_results):
+                if res.global_id == removed_gid:
+                    scene.bim_uval_results.remove(i)
+                    break
+        _sync_usage_filters(scene)
         return {"FINISHED"}
 
 
@@ -1526,6 +1688,7 @@ class BIM_OT_query_clear(Operator):
         context.scene.bim_query_spaces.clear()
         context.scene.bim_query_space_index = 0
         context.scene.bim_query_usage_filters.clear()
+        context.scene.bim_uval_results.clear()
         return {"FINISHED"}
 
 
@@ -2925,6 +3088,400 @@ class BIM_OT_select_space(Operator):
         context.view_layer.objects.active = obj
         return {"FINISHED"}
 
+
+# --------------------------------------------------------------------------- #
+# U-value operators
+# --------------------------------------------------------------------------- #
+
+class BIM_OT_query_u_values(Operator):
+    bl_idname = "bim_query.query_u_values"
+    bl_label = "Query U-Values"
+    bl_description = "Read U-values from IFC model for all queried spaces (pset → layer calc → default)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        tool, ue = _get_ifc_tools()
+        if tool is None or tool.Ifc.get() is None:
+            self.report({"WARNING"}, "No IFC project loaded.")
+            return {"CANCELLED"}
+        if not scene.bim_query_spaces:
+            self.report({"WARNING"}, "Query spaces in the Room List first.")
+            return {"CANCELLED"}
+
+        model = tool.Ifc.get()
+        unit_scale = _get_unit_scale(model)
+        defaults = {
+            "Wall":   scene.bim_uval_default_wall,
+            "Window": scene.bim_uval_default_window,
+            "Door":   scene.bim_uval_default_door,
+            "Roof":   scene.bim_uval_default_roof,
+            "Floor":  scene.bim_uval_default_floor,
+        }
+
+        scene.bim_uval_results.clear()
+
+        for item in scene.bim_query_spaces:
+            try:
+                entity = model.by_guid(item.global_id)
+            except Exception:
+                continue
+
+            res = scene.bim_uval_results.add()
+            res.name = item.name
+            res.long_name = item.long_name
+            res.global_id = item.global_id
+
+            seen: set = set()
+            for rel in (getattr(entity, "BoundedBy", None) or []):
+                if not rel.is_a("IfcRelSpaceBoundary"):
+                    continue
+                el = getattr(rel, "RelatedBuildingElement", None)
+                if el is None:
+                    continue
+
+                is_ext = _boundary_is_external(rel)
+                if not is_ext:
+                    if el.is_a("IfcWall") or el.is_a("IfcWallStandardCase"):
+                        if not _is_external_wall(el, ue):
+                            continue
+                    elif el.is_a("IfcWindow") or el.is_a("IfcDoor"):
+                        if _is_external_opening(el, ue) is not True:
+                            continue
+                    else:
+                        continue
+
+                gid = el.GlobalId
+                if gid in seen:
+                    continue
+                seen.add(gid)
+
+                kind = _classify_element_kind(el, rel)
+                if kind is None:
+                    continue
+
+                if kind in ("Window", "Door"):
+                    area = _opening_quantity_area(el, ue, unit_scale)
+                elif kind == "Wall":
+                    area, _ = _wall_quantity_area(el, ue)
+                else:
+                    area, _ = _find_quantity(el, ue, ["GrossArea", "NetArea", "Area"])
+                if area is None or float(area) <= 0.0:
+                    continue
+                area = float(area)
+
+                u = _u_from_pset(el, ue, kind)
+                source = "model"
+                if u is None:
+                    u = _u_from_layers(el, ue, unit_scale)
+                    source = "calculated"
+                if u is None:
+                    u = defaults.get(kind)
+                    source = "default"
+                has_u = u is not None
+                if has_u:
+                    u = float(u)
+
+                elem = res.elements.add()
+                elem.name = getattr(el, "Name", None) or kind
+                elem.global_id = gid
+                elem.kind = kind
+                elem.area = area
+                elem.u_value = u if has_u else 0.0
+                elem.u_source = source if has_u else "-"
+                elem.has_u = has_u
+
+                ua = area * u if has_u else 0.0
+                from_m = 1 if source == "model" else 0
+                if kind == "Wall":
+                    res.wall_area += area
+                    res.wall_ua += ua
+                    res.wall_total += 1
+                    res.wall_from_model += from_m
+                elif kind == "Window":
+                    res.window_area += area
+                    res.window_ua += ua
+                    res.window_total += 1
+                    res.window_from_model += from_m
+                elif kind == "Door":
+                    res.door_area += area
+                    res.door_ua += ua
+                    res.door_total += 1
+                    res.door_from_model += from_m
+                elif kind == "Roof":
+                    res.roof_area += area
+                    res.roof_ua += ua
+                elif kind == "Floor":
+                    res.floor_area += area
+                    res.floor_ua += ua
+
+            res.h_t = (res.wall_ua + res.window_ua + res.door_ua
+                       + res.roof_ua + res.floor_ua)
+            res.has_result = True
+
+        self.report({"INFO"}, f"U-values queried for {len(scene.bim_uval_results)} space(s).")
+        return {"FINISHED"}
+
+
+class BIM_OT_colorize_u_values(Operator):
+    bl_idname = "bim_query.colorize_u_values"
+    bl_label = "Colorize by U-value"
+    bl_description = "Color envelope elements blue (low U, good) → red (high U, poor)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        scene = context.scene
+        tool, _ = _get_ifc_tools()
+        if tool is None or tool.Ifc.get() is None:
+            self.report({"WARNING"}, "No IFC project loaded.")
+            return {"CANCELLED"}
+        if not scene.bim_uval_results:
+            self.report({"WARNING"}, "Run Query U-Values first.")
+            return {"CANCELLED"}
+
+        model = tool.Ifc.get()
+        u_min = scene.bim_uval_color_min
+        u_max = scene.bim_uval_color_max
+
+        global _bim_bem_backup, _bim_bem_shading
+        _bim_bem_backup = {}
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                shd = area.spaces[0].shading
+                _bim_bem_shading = {
+                    'type': shd.type,
+                    'color_type': getattr(shd, 'color_type', 'MATERIAL'),
+                }
+                shd.type = 'SOLID'
+                if hasattr(shd, 'color_type'):
+                    shd.color_type = 'OBJECT'
+                break
+
+        colored = 0
+        for res in scene.bim_uval_results:
+            for elem in res.elements:
+                if not elem.has_u:
+                    continue
+                try:
+                    entity = model.by_guid(elem.global_id)
+                    obj = tool.Ifc.get_object(entity)
+                except Exception:
+                    continue
+                if obj is None or obj.type != 'MESH':
+                    continue
+                if obj.name not in _bim_bem_backup:
+                    _bim_bem_backup[obj.name] = tuple(obj.color)
+                rgb = _u_color(elem.u_value, u_min, u_max)
+                obj.color = (rgb[0], rgb[1], rgb[2], 1.0)
+                colored += 1
+
+        scene.bim_query_viz_active = True
+        self.report({"INFO"}, f"Colored {colored} element(s) by U-value.")
+        return {"FINISHED"}
+
+
+class BIM_UL_u_value_results(UIList):
+    sort_by: EnumProperty(  # type: ignore[assignment]
+        items=[
+            ('name', "Name", "Sort by IFC Space Name"),
+            ('h_t',  "H_T",  "Sort by H_T (Σ U·A), highest first"),
+        ],
+        default='name',
+    )
+    reverse: bpy.props.BoolProperty(name="Reverse", default=False)  # type: ignore[assignment]
+
+    def draw_filter(self, context, layout):
+        row = layout.row(align=True)
+        row.prop(self, "filter_name", text="", icon="VIEWZOOM")
+        row.prop(self, "use_filter_invert", text="", icon="ARROW_LEFTRIGHT")
+        row2 = layout.row(align=True)
+        row2.prop(self, "sort_by", expand=True)
+        row2.prop(self, "reverse", text="", icon="SORT_DESC", toggle=True)
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        # item is BIMQuerySpaceItem (data source = bim_query_spaces)
+        st = _list_state['uval']
+        st['n_drawn'] += 1
+        st['scrollbar'] = st['n_drawn'] < st['n_visible']
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            label = item.name
+            if item.long_name and item.long_name != item.name:
+                label = f"{item.name} – {item.long_name}"
+            h_t_str = ""
+            for res in data.bim_uval_results:
+                if res.global_id == item.global_id and res.has_result:
+                    h_t_str = f"H_T = {res.h_t:.1f} W/K"
+                    break
+            row = layout.row(align=True)
+            sel = row.operator("bim_query.select_space", text="", icon="RESTRICT_SELECT_OFF", emboss=False)
+            sel.global_id = item.global_id
+            sp = row.split(factor=0.55, align=True)
+            sp.label(text=label, icon="MESH_PLANE")
+            sp.label(text=h_t_str)
+        elif self.layout_type == 'GRID':
+            layout.label(text=item.name)
+
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)  # BIMQuerySpaceItem list
+        h_t_map = {res.global_id: res.h_t
+                   for res in data.bim_uval_results if res.has_result}
+        search = self.filter_name.lower() if self.filter_name else ""
+        flt_flags = []
+        for item in items:
+            searchable = f"{item.name} {item.long_name}".lower()
+            passes = not search or search in searchable
+            flt_flags.append(self.bitflag_filter_item if passes else 0)
+        if self.sort_by == 'h_t':
+            sorted_indices = sorted(range(len(items)),
+                                    key=lambda i: h_t_map.get(items[i].global_id, 0.0),
+                                    reverse=True)
+        else:
+            sorted_indices = sorted(range(len(items)),
+                                    key=lambda i: items[i].name)
+        if self.reverse:
+            sorted_indices = list(reversed(sorted_indices))
+        flt_neworder = [0] * len(items)
+        for display_pos, orig_idx in enumerate(sorted_indices):
+            flt_neworder[orig_idx] = display_pos
+        _list_state['uval']['n_visible'] = sum(1 for f in flt_flags if f)
+        return flt_flags, flt_neworder
+
+
+class BIM_PT_u_value(Panel):
+    bl_label = "U-Value Analysis"
+    bl_idname = "BIM_PT_u_value"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "BIM to BEM"
+    bl_parent_id = "BIM_PT_query"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 1
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        tool, _ = _get_ifc_tools()
+        # --- 1. Default U-values (collapsible, always visible) ---
+        dbox = layout.box()
+        dicon = 'TRIA_DOWN' if scene.bim_uval_defaults_expanded else 'TRIA_RIGHT'
+        hdr = dbox.row()
+        hdr.alignment = "LEFT"
+        hdr.prop(scene, "bim_uval_defaults_expanded",
+                 text="Default U-Values [W/m²K]", icon=dicon, emboss=False)
+        if scene.bim_uval_defaults_expanded:
+            col = dbox.column(align=True)
+            def _dd(label, prop):
+                r = col.split(factor=0.50)
+                r.label(text=label)
+                r.prop(scene, prop, text="")
+            _dd("Außenwand",   "bim_uval_default_wall")
+            _dd("Dach",        "bim_uval_default_roof")
+            _dd("Bodenplatte", "bim_uval_default_floor")
+            _dd("Fenster",     "bim_uval_default_window")
+            _dd("Außentür",    "bim_uval_default_door")
+            note = dbox.column(align=True)
+            note.scale_y = 0.75
+            note.label(text="GEG reference values — used only when model has no data.", icon="INFO")
+
+        if tool is None or tool.Ifc.get() is None:
+            layout.label(text="No IFC project loaded.", icon="ERROR")
+            return
+
+        # --- 2. Make spaces visible + Add selected ---
+        layout.operator("bim_query.enable_spatial_decomposition", icon="HIDE_OFF",
+                        depress=scene.bim_spaces_available)
+        add_row = layout.row(align=True)
+        add_row.operator("bim_query.add_selected", icon="ADD")
+        add_row.operator("bim_query.refresh", text="", icon="FILE_REFRESH")
+
+        # --- 3. List ---
+        layout.operator("bim_query.query_u_values", icon="TEMP")
+        layout.template_list(
+            "BIM_UL_u_value_results", "uval",
+            scene, "bim_query_spaces",
+            scene, "bim_query_space_index",
+            rows=4,
+        )
+        rm_row = layout.row(align=True)
+        rm_row.operator("bim_query.remove", text="Remove", icon="REMOVE")
+        rm_row.operator("bim_query.clear", text="Clear All", icon="TRASH")
+
+        if not scene.bim_uval_results:
+            return
+
+        # --- 4. Colorize ---
+        cbox = layout.box()
+        cbox.label(text="Colorize range [W/m²K]:")
+        cr = cbox.row(align=True)
+        cr.prop(scene, "bim_uval_color_min", text="Min")
+        cr.prop(scene, "bim_uval_color_max", text="Max")
+        viz_row = cbox.row(align=True)
+        if scene.bim_query_viz_active:
+            viz_row.operator("bim_query.reset_colors", text="Reset Colors", icon="LOOP_BACK")
+            viz_row.operator("bim_query.colorize_u_values", text="", icon="FILE_REFRESH")
+        else:
+            viz_row.operator("bim_query.colorize_u_values", icon="SHADING_RENDERED")
+
+        # --- 5. Thermal properties of selected space ---
+        spaces = scene.bim_query_spaces
+        idx = scene.bim_query_space_index
+        if not (0 <= idx < len(spaces)):
+            return
+        space_item = spaces[idx]
+        sel = None
+        for res in scene.bim_uval_results:
+            if res.global_id == space_item.global_id:
+                sel = res
+                break
+        if sel is None or not sel.has_result:
+            return
+
+        dbox2 = layout.box()
+        full_name = space_item.name
+        if space_item.long_name and space_item.long_name != space_item.name:
+            full_name = f"{space_item.name} – {space_item.long_name}"
+        detail_icon = 'TRIA_DOWN' if scene.bim_uval_detail_expanded else 'TRIA_RIGHT'
+        dhdr = dbox2.row()
+        dhdr.alignment = "LEFT"
+        dhdr.prop(scene, "bim_uval_detail_expanded",
+                  text=f"Thermal properties of {full_name}",
+                  icon=detail_icon, emboss=False)
+        if not scene.bim_uval_detail_expanded:
+            return
+        col = dbox2.column(align=True)
+
+        def _kind_row(label, area, ua, total, from_m):
+            if total == 0:
+                return
+            u_avg = ua / area if area > 0 else 0.0
+            r = col.split(factor=0.32)
+            r.label(text=label)
+            sub = r.split(factor=0.72)
+            sub.label(text=f"{area:.1f} m²  U={u_avg:.2f}  → {ua:.1f} W/K")
+            sub.label(text=f"{from_m}/{total} available")
+
+        _kind_row("Außenwand:",  sel.wall_area,   sel.wall_ua,
+                  sel.wall_total,   sel.wall_from_model)
+        _kind_row("Fenster:",    sel.window_area, sel.window_ua,
+                  sel.window_total, sel.window_from_model)
+        _kind_row("Türen:",      sel.door_area,   sel.door_ua,
+                  sel.door_total,   sel.door_from_model)
+        if sel.roof_area > 0:
+            r = col.split(factor=0.32)
+            r.label(text="Dach:")
+            u_r = sel.roof_ua / sel.roof_area
+            r.label(text=f"{sel.roof_area:.1f} m²  U={u_r:.2f}  → {sel.roof_ua:.1f} W/K")
+        if sel.floor_area > 0:
+            r = col.split(factor=0.32)
+            r.label(text="Boden:")
+            u_f = sel.floor_ua / sel.floor_area
+            r.label(text=f"{sel.floor_area:.1f} m²  U={u_f:.2f}  → {sel.floor_ua:.1f} W/K")
+
+        col.separator(factor=0.5)
+        col.label(text=f"H_T = {sel.h_t:.1f} W/K  (Σ U·A)")
+
+
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
@@ -3144,6 +3701,7 @@ _list_state = {
     'query':      {'n_visible': 0, 'n_drawn': 0, 'scrollbar': False},
     'compliance': {'n_visible': 0, 'n_drawn': 0, 'scrollbar': False},
     'transform':  {'n_visible': 0, 'n_drawn': 0, 'scrollbar': False},
+    'uval':       {'n_visible': 0, 'n_drawn': 0, 'scrollbar': False},
 }
 
 
@@ -3684,6 +4242,8 @@ _classes = (
     BIMQueryOrient,
     BIMQueryUsageFilter,
     BIMQuerySpaceItem,
+    BIMUValueElement,
+    BIMUValueSpaceResult,
     BIM_OT_enable_spatial_decomposition,
     BIM_OT_query_add_selected,
     BIM_OT_query_refresh,
@@ -3699,12 +4259,16 @@ _classes = (
     BIM_OT_colorize_heating,
     BIM_OT_reset_colors,
     BIM_OT_select_space,
+    BIM_OT_query_u_values,
+    BIM_OT_colorize_u_values,
     BIM_UL_query_spaces,
     BIM_UL_compliance,
     BIM_UL_transform_spaces,
+    BIM_UL_u_value_results,
     BIM_PT_query,
     BIM_PT_space_transformation,
     BIM_PT_summer_overheating,
+    BIM_PT_u_value,
 )
 
 
@@ -3910,15 +4474,68 @@ def register():
         default=False,
     )
 
+    # ---- U-value analysis ---------------------------------------------------
+    bpy.types.Scene.bim_uval_results = CollectionProperty(type=BIMUValueSpaceResult)
+    bpy.types.Scene.bim_uval_defaults_expanded = BoolProperty(
+        name="Default U-Values",
+        description="Expand the default U-value inputs",
+        default=False,
+    )
+    bpy.types.Scene.bim_uval_detail_expanded = BoolProperty(
+        name="Thermal Properties Detail",
+        description="Expand the thermal properties detail for the selected space",
+        default=True,
+    )
+    bpy.types.Scene.bim_uval_default_wall = FloatProperty(
+        name="Außenwand",
+        description="Fallback U-value for external walls not found in model [W/m²K]",
+        default=0.28, min=0.05, max=5.0, step=1, precision=2,
+    )
+    bpy.types.Scene.bim_uval_default_roof = FloatProperty(
+        name="Dach",
+        description="Fallback U-value for roofs not found in model [W/m²K]",
+        default=0.20, min=0.05, max=5.0, step=1, precision=2,
+    )
+    bpy.types.Scene.bim_uval_default_floor = FloatProperty(
+        name="Bodenplatte",
+        description="Fallback U-value for ground floors not found in model [W/m²K]",
+        default=0.35, min=0.05, max=5.0, step=1, precision=2,
+    )
+    bpy.types.Scene.bim_uval_default_window = FloatProperty(
+        name="Fenster",
+        description="Fallback U-value for windows not found in model [W/m²K]",
+        default=1.30, min=0.50, max=6.0, step=10, precision=2,
+    )
+    bpy.types.Scene.bim_uval_default_door = FloatProperty(
+        name="Außentür",
+        description="Fallback U-value for external doors not found in model [W/m²K]",
+        default=1.80, min=0.50, max=6.0, step=10, precision=2,
+    )
+    bpy.types.Scene.bim_uval_color_min = FloatProperty(
+        name="Min U",
+        description="U-value mapped to blue (well insulated) end of colorize gradient",
+        default=0.10, min=0.0, max=5.0, step=5, precision=2,
+    )
+    bpy.types.Scene.bim_uval_color_max = FloatProperty(
+        name="Max U",
+        description="U-value mapped to red (poorly insulated) end of colorize gradient",
+        default=2.00, min=0.1, max=10.0, step=10, precision=2,
+    )
+
 
 def unregister():
-    for _p in ("bim_query_compliance_expanded",
+    for _p in ("bim_uval_color_max", "bim_uval_color_min",
+               "bim_uval_default_door", "bim_uval_default_window",
+               "bim_uval_default_floor", "bim_uval_default_roof",
+               "bim_uval_detail_expanded",
+               "bim_uval_default_wall", "bim_uval_defaults_expanded",
+               "bim_query_compliance_expanded",
                "bim_query_detail_expanded",
                "bim_query_room_selector_expanded", "bim_query_input_expanded",
                "bim_query_colorize_mode", "bim_transform_standard",
                "bim_transform_cross_storey", "bim_transform_group_by_usage",
                "bim_project_sonnenschutz", "bim_project_verglasung", "bim_project_g_value",
-        "bim_project_frame_override", "bim_project_frame_fraction",
+               "bim_project_frame_override", "bim_project_frame_fraction",
                "bim_project_passive_kuehlung",
                "bim_project_bauart", "bim_project_nachtlueftung",
                "bim_project_nutzung", "bim_project_klimaregion",
@@ -3927,6 +4544,7 @@ def unregister():
                "bim_spaces_available", "bim_query_group_by"):
         try: delattr(bpy.types.Scene, _p)
         except: pass
+    del bpy.types.Scene.bim_uval_results
     del bpy.types.Scene.bim_query_longname_filters
     del bpy.types.Scene.bim_query_usage_filters
     del bpy.types.Scene.bim_query_space_index
