@@ -62,6 +62,36 @@ git push origin v2.3.0
 | New feature | 2.3.x → 2.4.0 | New behaviour, new UI element |
 | Breaking change | 2.x.x → 3.0.0 | Incompatible with previous version |
 
+## Working with unfinished changes across branches
+
+Uncommitted changes follow you when you switch branches (if there is no conflict). Use `git stash` to park them safely before switching.
+
+### Basic workflow
+```
+git stash                  # save changes, clean working dir
+git checkout master        # switch freely
+git checkout feature/xyz   # come back later
+git stash pop              # restore your changes
+```
+
+### Working with multiple stashes
+Always name them so you can tell them apart:
+```
+git stash push -m "descriptive name"
+```
+
+List, inspect, and restore by index:
+```
+git stash list             # see all stashes with indices
+git stash show stash@{1}   # inspect a specific one
+git stash pop stash@{1}    # restore a specific one
+git stash drop stash@{1}   # delete one without applying
+```
+
+`stash@{0}` is always the most recent. Indices shift down after a pop or drop.
+
+---
+
 ## Useful commands
 
 | Command | What it does |
@@ -72,3 +102,6 @@ git push origin v2.3.0
 | `git diff` | Show exact line-by-line changes not yet committed |
 | `git checkout master` | Switch back to master |
 | `git pull` | Download latest changes from GitHub |
+| `git stash` | Save uncommitted changes and clean working dir |
+| `git stash pop` | Restore most recent stash |
+| `git stash list` | See all saved stashes |
