@@ -20,7 +20,7 @@ This `BIM-to-BEM` addon for [Blender](https://github.com/blender/blender) aims t
 
 *Note: some of the variables are in German to follow naming conventions of the standard.*
 
-![Panel - Summer Overheating Protection](docs/Panel - Summer Overheating Protection.png)
+![Panel - Summer Overheating Protection](docs/Panel%20-%20Summer%20Overheating%20Protection.png)
 
 ### U-Value Calculator
 
@@ -42,7 +42,7 @@ $$H_T = \sum_{j} A_j \cdot U_j \quad \left[\frac{\text{W}}{\text{K}}\right]$$
 
 where $A_j$ is the area of envelope element $j$ [m²] and $U_j$ its thermal transmittance [W/m²K].
 
-![Panel - U-Value Calculator](docs/Panel - U-Value Calculator.png)
+![Panel - U-Value Calculator](docs/Panel%20-%20U-Value%20Calculator.png)
 
 ### Space Transformation for Building Physics
 
@@ -72,7 +72,7 @@ Zone boundary placement at walls by standard:
 
 *Note: low-heated is treated as conditioned (equivalent to heated) for boundary placement.*
 
-![Panel - Space Transformation for Building Physics](docs/Panel - Space Transformation for Building Physics.png)
+![Panel - Space Transformation for Building Physics](docs/Panel%20-%20Space%20Transformation%20for%20Building%20Physics.png)
 
 ## Requirements
 
