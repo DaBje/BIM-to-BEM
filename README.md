@@ -1,4 +1,4 @@
-# BIM-to-BEM
+﻿# BIM-to-BEM
 
 Despite 30+ years of development, [`IFC`](https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes/) (Industrial Foundation Classes) and [`BIM`](https://www.buildingsmart.org/standards/bsi-standards/bim/) (Building Information Modelling) have yet to become standard practice across the AEC industry. Some countries actually come close, having introduced openBIM mandates - at least for architects, structural engineers, and MEP (Mechanical, Electrical, Plumbing) engineers on public projects (see [buildingSMART Global openBIM Mandates 2025](https://www.buildingsmart.org/wp-content/uploads/2025/03/IFC-Mandate_2025.pdf)).
 
@@ -41,6 +41,22 @@ where $d_i$ is the thickness of layer $i$ [m], $\lambda_i$ its thermal conductiv
 $$H_T = \sum_{j} A_j \cdot U_j \quad \left[\frac{\text{W}}{\text{K}}\right]$$
 
 where $A_j$ is the area of envelope element $j$ [m²] and $U_j$ its thermal transmittance [W/m²K].
+
+**Φ_T** (transmission heat loss per space, DIN EN 12831-1):
+
+$$\Phi_T = H_{T,\text{corr}} \cdot \Delta T \quad [\text{W}]$$
+
+where $\Delta T = \theta_{\text{int}} - \theta_e$ is the design temperature difference [K], with $\theta_e$ the design outdoor temperature and $\theta_{\text{int}}$ the internal setpoint (heated: 20 °C, low-heated: 15 °C). The corrected heat loss coefficient accounts for thermal bridges:
+
+$$H_{T,\text{corr}} = H_T + \Delta u_{WB} \cdot A_{\text{envelope}} \quad \left[\frac{\text{W}}{\text{K}}\right]$$
+
+where $\Delta u_{WB} = 0.05$ W/m²K is the thermal bridge supplement per DIN EN 12831-1 §6.3.3 (adjustable, can be disabled).
+
+**Q_T** (annual transmission heat energy, optional estimate):
+
+$$Q_T = \Phi_T \cdot \text{HDD} \cdot \frac{24}{1000} \quad \left[\frac{\text{kWh}}{\text{a}}\right]$$
+
+where HDD are the heating degree days for the site [Kd/a].
 
 ![Panel - U-Value Calculator](docs/Panel%20-%20U-Value%20Calculator.png)
 
