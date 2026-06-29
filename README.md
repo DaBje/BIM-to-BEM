@@ -2,7 +2,7 @@
 
 Despite 30+ years of development, [`IFC`](https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes/) (Industrial Foundation Classes) and [`BIM`](https://www.buildingsmart.org/standards/bsi-standards/bim/) (Building Information Modelling) have yet to become standard practice across the AEC industry. Some countries actually come close, having introduced openBIM mandates - at least for architects, structural engineers, and MEP (Mechanical, Electrical, Plumbing) engineers on public projects (see [buildingSMART Global openBIM Mandates 2025](https://www.buildingsmart.org/wp-content/uploads/2025/03/IFC-Mandate_2025.pdf)).
 
-So why are disciplines such as building physics and `BEM` (Building Energy Modelling) left out?
+So why are disciplines such as building physics and `BEM` (Building Energy Modelling) still left out?
 
 ---
 
