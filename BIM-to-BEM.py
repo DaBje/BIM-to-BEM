@@ -3,8 +3,9 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
-    "version": (3, 0, 1),
+    "version": (3, 1, 0),
     # Feature - Issue#11: U-value calculator
+    # Feature - Issue#12: Transmission heat loss Φ_T (DIN EN 12831-1)
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar (N) > BIM to BEM",
     "description": "Query net floor area, volume, OWR and WFR (opening-to-floor ratio per DIN 4108-2) of IFC spaces with orientation breakdown.",
@@ -1356,6 +1357,9 @@ class BIMUValueSpaceResult(PropertyGroup):
     floor_area:        FloatProperty(default=0.0)   # type: ignore[assignment]
     floor_ua:          FloatProperty(default=0.0)   # type: ignore[assignment]
     h_t:               FloatProperty(default=0.0)   # type: ignore[assignment]  # Σ U·A [W/K]
+    a_envelope:        FloatProperty(default=0.0)   # type: ignore[assignment]  # total envelope area [m²]
+    phi_t:             FloatProperty(default=0.0)   # type: ignore[assignment]  # Φ_T [W]
+    has_phi_t:         BoolProperty(default=False)  # type: ignore[assignment]
     has_result:        BoolProperty(default=False)  # type: ignore[assignment]
     elements: CollectionProperty(type=BIMUValueElement)  # type: ignore[assignment]
 
@@ -3217,6 +3221,18 @@ class BIM_OT_query_u_values(Operator):
 
             res.h_t = (res.wall_ua + res.window_ua + res.door_ua
                        + res.roof_ua + res.floor_ua)
+            res.a_envelope = (res.wall_area + res.window_area + res.door_area
+                              + res.roof_area + res.floor_area)
+
+            condition = _space_condition(item, scene)
+            theta_int = 20.0 if condition == "heated" else 15.0 if condition == "low_heated" else None
+            if theta_int is not None:
+                h_t_corr = res.h_t
+                if scene.bim_uval_wb_enabled and res.a_envelope > 0:
+                    h_t_corr += scene.bim_uval_delta_u_wb * res.a_envelope
+                res.phi_t = h_t_corr * (theta_int - scene.bim_uval_theta_e)
+                res.has_phi_t = True
+
             res.has_result = True
 
         self.report({"INFO"}, f"U-values queried for {len(scene.bim_uval_results)} space(s).")
@@ -3384,18 +3400,49 @@ class BIM_PT_u_value(Panel):
             note.scale_y = 0.75
             note.label(text="GEG reference values — used only when model has no data.", icon="INFO")
 
+        # --- 2. Climate & Thermal Bridges (collapsible) ---
+        cbox = layout.box()
+        cicon = 'TRIA_DOWN' if scene.bim_uval_climate_expanded else 'TRIA_RIGHT'
+        chdr = cbox.row()
+        chdr.alignment = "LEFT"
+        chdr.prop(scene, "bim_uval_climate_expanded",
+                  text="Climate & Thermal Bridges", icon=cicon, emboss=False)
+        if scene.bim_uval_climate_expanded:
+            col = cbox.column(align=True)
+            r = col.split(factor=0.50)
+            r.label(text="θ_e (outdoor) [°C]")
+            r.prop(scene, "bim_uval_theta_e", text="")
+            col.separator(factor=0.5)
+            wb_row = col.row(align=True)
+            wb_row.prop(scene, "bim_uval_wb_enabled", text="Δu_WB thermal bridge supplement")
+            sub = col.row(align=True)
+            sub.enabled = scene.bim_uval_wb_enabled
+            sub2 = sub.split(factor=0.50)
+            sub2.label(text="Δu_WB [W/m²K]")
+            sub2.prop(scene, "bim_uval_delta_u_wb", text="")
+            col.separator(factor=0.5)
+            col.prop(scene, "bim_uval_hdd_enabled", text="Annual estimate Q_T (HDD)")
+            sub3 = col.row(align=True)
+            sub3.enabled = scene.bim_uval_hdd_enabled
+            sub4 = sub3.split(factor=0.50)
+            sub4.label(text="HDD [Kd/a]")
+            sub4.prop(scene, "bim_uval_hdd", text="")
+            note = cbox.column(align=True)
+            note.scale_y = 0.75
+            note.label(text="θ_int: heated = 20 °C, low-heated = 15 °C (DIN EN 12831-1).", icon="INFO")
+
         if tool is None or tool.Ifc.get() is None:
             layout.label(text="No IFC project loaded.", icon="ERROR")
             return
 
-        # --- 2. Make spaces visible + Add selected ---
+        # --- 4. Make spaces visible + Add selected ---
         layout.operator("bim_query.enable_spatial_decomposition", icon="HIDE_OFF",
                         depress=scene.bim_spaces_available)
         add_row = layout.row(align=True)
         add_row.operator("bim_query.add_selected", icon="ADD")
         add_row.operator("bim_query.refresh", text="", icon="FILE_REFRESH")
 
-        # --- 3. List ---
+        # --- 5. List ---
         layout.operator("bim_query.query_u_values", icon="TEMP")
         layout.template_list(
             "BIM_UL_u_value_results", "uval",
@@ -3480,6 +3527,14 @@ class BIM_PT_u_value(Panel):
 
         col.separator(factor=0.5)
         col.label(text=f"H_T = {sel.h_t:.1f} W/K  (Σ U·A)")
+        if sel.has_phi_t:
+            h_t_corr = sel.h_t
+            if scene.bim_uval_wb_enabled and sel.a_envelope > 0:
+                h_t_corr += scene.bim_uval_delta_u_wb * sel.a_envelope
+            col.label(text=f"Φ_T = {sel.phi_t:.0f} W  (H_T · ΔT)")
+            if scene.bim_uval_hdd_enabled and scene.bim_uval_hdd > 0:
+                q_t = sel.phi_t * scene.bim_uval_hdd * 24.0 / 1000.0
+                col.label(text=f"Q_T ≈ {q_t:.0f} kWh/a  (annual estimate)")
 
 
 # --------------------------------------------------------------------------- #
@@ -4521,6 +4576,36 @@ def register():
         description="U-value mapped to red (poorly insulated) end of colorize gradient",
         default=2.00, min=0.1, max=10.0, step=10, precision=2,
     )
+    bpy.types.Scene.bim_uval_climate_expanded = BoolProperty(
+        name="Climate & Thermal Bridges",
+        description="Expand the climate and thermal bridge inputs",
+        default=False,
+    )
+    bpy.types.Scene.bim_uval_theta_e = FloatProperty(
+        name="θ_e",
+        description="Design outdoor temperature θ_e per DIN/TRY data [°C]",
+        default=-12.0, min=-30.0, max=20.0, step=10, precision=1,
+    )
+    bpy.types.Scene.bim_uval_wb_enabled = BoolProperty(
+        name="Thermal bridge supplement Δu_WB",
+        description="Apply the thermal bridge supplement per DIN EN 12831-1 §6.3.3",
+        default=True,
+    )
+    bpy.types.Scene.bim_uval_delta_u_wb = FloatProperty(
+        name="Δu_WB",
+        description="Thermal bridge supplement [W/m²K] — 0.05 per DIN EN 12831-1 §6.3.3",
+        default=0.05, min=0.0, max=0.5, step=1, precision=3,
+    )
+    bpy.types.Scene.bim_uval_hdd_enabled = BoolProperty(
+        name="Annual estimate (Q_T)",
+        description="Also compute annual transmission heat energy Q_T using Heating Degree Days",
+        default=False,
+    )
+    bpy.types.Scene.bim_uval_hdd = FloatProperty(
+        name="HDD",
+        description="Heating degree days for the site [Kd/a]",
+        default=3500.0, min=0.0, max=10000.0, step=100, precision=0,
+    )
 
 
 def unregister():
@@ -4529,6 +4614,9 @@ def unregister():
                "bim_uval_default_floor", "bim_uval_default_roof",
                "bim_uval_detail_expanded",
                "bim_uval_default_wall", "bim_uval_defaults_expanded",
+               "bim_uval_climate_expanded", "bim_uval_theta_e",
+               "bim_uval_wb_enabled", "bim_uval_delta_u_wb",
+               "bim_uval_hdd_enabled", "bim_uval_hdd",
                "bim_query_compliance_expanded",
                "bim_query_detail_expanded",
                "bim_query_room_selector_expanded", "bim_query_input_expanded",
