@@ -3,7 +3,7 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
-    "version": (3, 0, 0),
+    "version": (3, 0, 1),
     # Feature - Issue#11: U-value calculator
     "blender": (5, 1, 2),
     "location": "View3D > Sidebar (N) > BIM to BEM",
@@ -3348,7 +3348,7 @@ class BIM_UL_u_value_results(UIList):
 
 
 class BIM_PT_u_value(Panel):
-    bl_label = "U-Value Analysis"
+    bl_label = "U-Value Calculator"
     bl_idname = "BIM_PT_u_value"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -3756,7 +3756,7 @@ class BIM_PT_space_transformation(Panel):
     bl_category = "BIM to BEM"
     bl_parent_id = "BIM_PT_query"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 1
+    bl_order = 2
 
     def draw(self, context):
         layout = self.layout
