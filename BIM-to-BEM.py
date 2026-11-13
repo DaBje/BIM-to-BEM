@@ -3,7 +3,7 @@
 bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
-    "version": (3, 1, 0),
+    "version": (3, 1, 1),
     # Feature - Issue#11: U-value calculator
     # Feature - Issue#12: Transmission heat loss Φ_T (DIN EN 12831-1)
     "blender": (5, 1, 2),
@@ -35,6 +35,29 @@ def _get_ifc_tools():
         return tool, ue
     except Exception:
         return None, None
+
+
+def _set_view3d_shading(shd, shading_type, color_type):
+    """Set viewport shading type and solid colour mode.
+
+    Bonsai subscribes (bpy.msgbus) to every write of ``shading.type`` and,
+    when the type is SOLID, resets ``color_type`` to MATERIAL in a deferred
+    callback — even if the written value was unchanged.  So only write the
+    type when it really changes, and in that case re-apply the colour mode
+    after Bonsai's callback has run.
+    """
+    if shd.type != shading_type:
+        shd.type = shading_type
+
+        def _reapply():
+            try:
+                shd.color_type = color_type
+            except Exception:
+                pass   # viewport closed in the meantime
+            return None   # one-shot timer
+
+        bpy.app.timers.register(_reapply, first_interval=0.1)
+    shd.color_type = color_type
 
 
 def _get_geom_tools():
@@ -1915,8 +1938,7 @@ def _apply_colorize(context, compliance_mode):
                     'type':       shd.type,
                     'color_type': getattr(shd, 'color_type', 'MATERIAL'),
                 }
-            shd.type       = 'SOLID'
-            shd.color_type = 'OBJECT'
+            _set_view3d_shading(shd, 'SOLID', 'OBJECT')
             break
 
     space_set = set(colored_objs.keys())
@@ -2876,8 +2898,7 @@ def _create_and_visualize_zones(context):
             if not scene.bim_query_viz_active:
                 _bim_bem_shading = {'type': shd.type,
                                     'color_type': getattr(shd, 'color_type', 'MATERIAL')}
-            shd.type       = 'SOLID'
-            shd.color_type = 'OBJECT'
+            _set_view3d_shading(shd, 'SOLID', 'OBJECT')
             break
 
     # Hide the IFC space objects; opaque zone boundary meshes represent each zone.
@@ -2977,8 +2998,7 @@ def _apply_colorize_heating(context):
                     'type':       shd.type,
                     'color_type': getattr(shd, 'color_type', 'MATERIAL'),
                 }
-            shd.type       = 'SOLID'
-            shd.color_type = 'OBJECT'
+            _set_view3d_shading(shd, 'SOLID', 'OBJECT')
             break
 
     space_set = set(colored_objs.keys())
@@ -3057,9 +3077,7 @@ class BIM_OT_reset_colors(Operator):
         for area in context.screen.areas:
             if area.type == 'VIEW_3D':
                 shd = area.spaces[0].shading
-                shd.type = orig_type
-                if hasattr(shd, 'color_type'):
-                    shd.color_type = orig_color
+                _set_view3d_shading(shd, orig_type, orig_color)
                 break
         scene.bim_query_viz_active = False
         self.report({"INFO"}, f"Restored {restored} object colour(s).")
@@ -3268,9 +3286,7 @@ class BIM_OT_colorize_u_values(Operator):
                     'type': shd.type,
                     'color_type': getattr(shd, 'color_type', 'MATERIAL'),
                 }
-                shd.type = 'SOLID'
-                if hasattr(shd, 'color_type'):
-                    shd.color_type = 'OBJECT'
+                _set_view3d_shading(shd, 'SOLID', 'OBJECT')
                 break
 
         colored = 0
