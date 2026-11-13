@@ -110,6 +110,8 @@ Zone boundary placement at walls by standard:
 3. Use **Add Selected Spaces** to populate the room list
 4. Follow the steps in one or more of the addon panels
 
+The folder "IFC-samples" contains "AC-20-Smiley-West-10-Bldg.ifc" as IFC sample for unrestricted use by the *Institute for Automation and Applied Informatics (IAI) / Karlsruhe Institute of Technology (KIT)*, as well as sub-set of the file. Both were used during development and are a good basis for exploring the addon.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the Git workflow and version conventions.
