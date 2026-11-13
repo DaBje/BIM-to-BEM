@@ -1,22 +1,22 @@
 ﻿# BIM-to-BEM
 
-Despite 30+ years of development, [`IFC`](https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes/) (Industrial Foundation Classes) and [`BIM`](https://www.buildingsmart.org/standards/bsi-standards/bim/) (Building Information Modelling) have yet to become standard practice across the AEC industry. Some countries actually come close, having introduced openBIM mandates - at least for architects, structural engineers, and MEP (Mechanical, Electrical, Plumbing) engineers on public projects (see [buildingSMART Global openBIM Mandates 2025](https://www.buildingsmart.org/wp-content/uploads/2025/03/IFC-Mandate_2025.pdf)).
+Despite 30+ years of development, [IFC](https://www.buildingsmart.org/standards/bsi-standards/industry-foundation-classes/) (Industry Foundation Classes) and [BIM](https://www.buildingsmart.org/standards/bsi-standards/bim/) (Building Information Modelling) have yet to become standard practice across the AEC industry. Some countries actually come close, having introduced openBIM mandates - at least for architects, structural engineers, and MEP (Mechanical, Electrical, Plumbing) engineers on public projects (see [buildingSMART Global openBIM Mandates 2025](https://www.buildingsmart.org/wp-content/uploads/2025/03/IFC-Mandate_2025.pdf)).
 
-So why are disciplines such as building physics and `BEM` (Building Energy Modelling) still left out?
+So why are disciplines such as building physics and BEM (Building Energy Modelling) still left out?
 
 ---
 
-This `BIM-to-BEM` addon for [Blender](https://github.com/blender/blender) aims to help bridge that gap by introducing building physics capabilities and the ability to transform `IFC` files into BEM-tool-compatible models, built on the open-source `IFC` authoring functionality provided by [Bonsai](https://bonsaibim.org/), itself based on [IfcOpenShell](https://github.com/IfcOpenShell/IfcOpenShell). It is a living project, grounded in applied engineering, and is expected to grow in functionality and features over time.
+The BIM-to-BEM addon for [Blender](https://github.com/blender/blender) aims to help bridge that gap by introducing building physics capabilities and the ability to transform IFC files into BEM-tool-compatible models, built on the open-source IFC authoring functionality provided by [Bonsai](https://bonsaibim.org/), itself based on [IfcOpenShell](https://github.com/IfcOpenShell/IfcOpenShell). It is a living project, grounded in applied engineering, and is expected to grow in functionality and features over time.
 
 ## Features
 
 ### Summer Overheating Protection (DIN 4108-2)
 *In accordance with the German DIN 4108-2 "Sommerlicher Wärmeschutz"*
 
-- Configurable input parameters: climate region, usage type, night ventilation, thermal mass, passive cooling, glazing solar transmittance (g-value), shading device (F_C), and an optional global frame share override
+- Configurable input parameters: climate region, usage type, night ventilation, thermal mass, passive cooling, glazing solar transmittance (g-value), shading device ($F_C$), and an optional global frame share override
 - `IfcSpace` query with filtering by usage type and sorting by name, usage, or WFR (window-to-floor ratio)
-- Per-space breakdown of wall and glazing areas by cardinal direction, including WFR, OWR (opening-to-floor ratio), automatic frame share detection, and S_zul calculation
-- S_vorh vs. S_zul compliance check with pass/fail summary and viewport colorization
+- Per-space breakdown of wall and glazing areas by cardinal direction, including WFR, OWR (opening-to-wall ratio), automatic frame share detection, and $S_{zul}$ calculation
+- $S_{vorh}$ vs. $S_{zul}$ compliance check with pass/fail summary and viewport colorization
 
 *Note: some of the variables are in German to follow naming conventions of the standard.*
 
@@ -24,8 +24,8 @@ This `BIM-to-BEM` addon for [Blender](https://github.com/blender/blender) aims t
 
 ### U-Value Calculator
 
-- Configurable fallback U-values per envelope element: external wall (*Außenwand*), roof (*Dach*), ground floor (*Boden*), window (*Fenster*), and external door (*Außentür*), defaulting to GEG (German *Gebäude Energie Gesetz*) reference values
-- `IfcSpace` query of U-values per envelope element from IFC model data, with sorting by name and H_T; falls back to the configurable GEG defaults when model data is absent, with layer-by-layer thermal conductivity calculation where material data is available
+- Configurable fallback U-values per envelope element: external wall (*Außenwand*), roof (*Dach*), ground floor (*Boden*), window (*Fenster*), and external door (*Außentür*), defaulting to GEG (German *Gebäudeenergiegesetz*) reference values
+- `IfcSpace` query of U-values per envelope element from IFC model data, with sorting by name and $H_T$; falls back to the configurable GEG defaults when model data is absent, with layer-by-layer thermal conductivity calculation where material data is available
 - Area-weighted average U-value per space, with viewport colorization by thermal performance
 
 #### Formulas used
@@ -36,13 +36,13 @@ $$U = \frac{1}{R_{si} + \displaystyle\sum_{i} \frac{d_i}{\lambda_i} + R_{se}}$$
 
 where $d_i$ is the thickness of layer $i$ [m], $\lambda_i$ its thermal conductivity [W/mK], and $R_{si}$, $R_{se}$ the interior and exterior surface resistances [m²K/W]. The addon uses fixed values per ISO 6946: $R_{si} = 0.13$ m²K/W and $R_{se} = 0.04$ m²K/W.
 
-**H_T** (specific transmission heat loss per space):
+**$H_T$** (specific transmission heat loss per space):
 
 $$H_T = \sum_{j} A_j \cdot U_j \quad \left[\frac{\text{W}}{\text{K}}\right]$$
 
 where $A_j$ is the area of envelope element $j$ [m²] and $U_j$ its thermal transmittance [W/m²K].
 
-**Φ_T** (transmission heat loss per space, DIN EN 12831-1):
+**$\Phi_T$** (transmission heat loss per space, DIN EN 12831-1):
 
 $$\Phi_T = H_{T,\text{corr}} \cdot \Delta T \quad [\text{W}]$$
 
@@ -52,7 +52,7 @@ $$H_{T,\text{corr}} = H_T + \Delta u_{WB} \cdot A_{\text{envelope}} \quad \left[
 
 where $\Delta u_{WB} = 0.05$ W/m²K is the thermal bridge supplement per DIN EN 12831-1 §6.3.3 (adjustable, can be disabled).
 
-**Q_T** (annual transmission heat energy, optional estimate):
+**$Q_T$** (annual transmission heat energy, optional estimate):
 
 $$Q_T = \Phi_T \cdot \text{HDD} \cdot \frac{24}{1000} \quad \left[\frac{\text{kWh}}{\text{a}}\right]$$
 
@@ -92,25 +92,26 @@ Zone boundary placement at walls by standard:
 
 ## Requirements
 
-- [Blender](https://www.blender.org/) 5.1.2 or later (earlier versions not tested)
-- [Bonsai](https://bonsaibim.org/) addon (for IFC support)
+- [Blender](https://www.blender.org/) 5.2.1 (other versions not tested)
+- [Bonsai](https://bonsaibim.org/) 0.9.0 addon for IFC support (other versions not tested)
 - IFC4 model (earlier versions not tested, IFC2x3 may not support `Pset_MaterialThermal.ThermalConductivity` formalized in IFC4, `IfcRelSpaceBoundary`, or `Qto_*` naming)
 
 ## Installation
 
 1. Download `BIM-to-BEM.py`
-2. In Blender: `Edit → Preferences → Add-ons → Install`
+2. In Blender: **Edit → Preferences → Add-ons → ⌄ → Install from Disk**
 3. Select the downloaded file and enable the addon
 4. Open the **N-panel** in the 3D viewport (`N` key) → **BIM to BEM** tab
 
 ## Usage
 
 1. Load your IFC model via Bonsai
-2. Select one or more IFC Space objects in the viewport
-3. Use **Add Selected Spaces** to populate the room list
-4. Follow the steps in one or more of the addon panels
+2. Use **Make Spaces Available** to show and unlock the `IfcSpace` objects
+3. Select one or more `IfcSpace` objects in the viewport
+4. Use **Add Selected Spaces** to populate the room list
+5. Follow the steps in one or more of the addon panels
 
-The folder "IFC-samples" contains "AC-20-Smiley-West-10-Bldg.ifc" as IFC sample for unrestricted use by the *Institute for Automation and Applied Informatics (IAI) / Karlsruhe Institute of Technology (KIT)*, as well as sub-set of the file. Both were used during development and are a good basis for exploring the addon.
+The folder `IFC-samples` contains `AC-20-Smiley-West-10-Bldg.ifc` as an IFC sample for unrestricted use by the *Institute for Automation and Applied Informatics (IAI) / Karlsruhe Institute of Technology (KIT)*, as well as a subset of the file (`AC-20-Smiley-West-10-Bldg - small.ifc`). Both were used during development and are a good basis for exploring the addon.
 
 ## Contributing
 
