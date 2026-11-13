@@ -4,9 +4,8 @@ bl_info = {
     "name": "BIM to BEM",
     "author": "DaBje",
     "version": (3, 1, 1),
-    # Feature - Issue#11: U-value calculator
-    # Feature - Issue#12: Transmission heat loss Φ_T (DIN EN 12831-1)
-    "blender": (5, 1, 2),
+    "blender": (5, 2, 1),
+    # Tested with Bonsai 0.9.0
     "location": "View3D > Sidebar (N) > BIM to BEM",
     "description": "Query net floor area, volume, OWR and WFR (opening-to-floor ratio per DIN 4108-2) of IFC spaces with orientation breakdown.",
     "category": "Object",
